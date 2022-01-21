@@ -1,21 +1,31 @@
 use anyhow::{anyhow, Result};
-use discord::model::{Event, Message};
+use discord::model::{ChannelId, Event, Message, PublicChannel, ServerId};
 use discord::Discord;
 use dotenv::dotenv;
 use hyper::net::HttpsConnector;
 use hyper::Client;
 use hyper_native_tls::NativeTlsClient;
+use lazy_static::lazy_static;
 use lz_str::{decompress_uri, str_to_u32_vec};
+use regex::Regex;
+use std::collections::HashMap;
 use std::io::Read;
 use std::{env, time};
 use topaz_tak::board::{Board5, Board6, Board7};
 use topaz_tak::search::proof::TinueSearch;
 use topaz_tak::{Color, GameMove, TakBoard, TakGame};
 
+lazy_static! {
+    static ref PTN_META: Regex = Regex::new(r#"\[(?P<Key>.*?) "(?P<Value>.*?)"\]"#).unwrap();
+    static ref PTN_MOVE: Regex = Regex::new(r#"([SC1-8]?[A-Ha-h]\d[+-<>]?\d*)"#).unwrap();
+}
+
+const TAK_TALK: ServerId = ServerId(176389490762448897);
+
 fn main() {
     dotenv().ok();
     // Log in to Discord using a bot token from the environment
-    // .env file in the root of the project should have format DISCORD_TOKEN=[TOKEN]
+    // .env file in the root of the project should have format DISCORD_TOKEN="[TOKEN]"
     let (_, token) = env::vars()
         .find(|(k, _)| k == "DISCORD_TOKEN")
         .expect("Could not read .env file!");
@@ -24,6 +34,16 @@ fn main() {
     // Establish and use a websocket connection
     let (mut connection, _) = discord.connect().expect("Discord connection failed!");
     println!("Ready.");
+    let channels = discord
+        .get_server_channels(TAK_TALK)
+        .expect("Failed to get Tak server channels!");
+    let matches: Vec<_> = channels
+        .iter()
+        .filter_map(|c| AsyncChannel::try_new(c))
+        .collect();
+    for m in matches {
+        println!("{:?}", m);
+    }
     loop {
         match connection.recv_event() {
             Ok(Event::MessageCreate(message)) => {
@@ -44,14 +64,42 @@ fn main() {
     }
 }
 
+#[derive(Debug)]
+struct AsyncChannel {
+    id: ChannelId,
+    player1: String,
+    player2: String,
+}
+
+impl AsyncChannel {
+    pub fn try_new(channel: &PublicChannel) -> Option<Self> {
+        let mut iter = channel.name.split("-🆚-");
+        let p1 = iter.next()?;
+        let p2 = iter.next()?;
+        if iter.next().is_some() {
+            None
+        } else {
+            Some(Self {
+                id: channel.id,
+                player1: p1.to_string(),
+                player2: p2.to_string(),
+            })
+        }
+    }
+}
+
 struct TinueRequest<'a> {
-    message: &'a Message,
+    sender: &'a str,
+    content: &'a str,
 }
 
 impl<'a> TinueRequest<'a> {
+    fn new(sender: &'a str, content: &'a str) -> Self {
+        Self { sender, content }
+    }
+
     fn get_ptn_string(&self) -> Result<String> {
         let details = self
-            .message
             .content
             .split_whitespace()
             .nth(1)
@@ -73,7 +121,7 @@ impl<'a> TinueRequest<'a> {
                     .split("&name")
                     .next()
                     .ok_or_else(|| anyhow!("Bad ptn ninja link!"))?;
-                println!("{}", part);
+                // println!("{}", part);
                 let decompressed = decompress_uri(&str_to_u32_vec(part))
                     .ok_or_else(|| anyhow!("Bad ptn ninja game string"))?;
                 Ok(decompressed)
@@ -85,7 +133,7 @@ impl<'a> TinueRequest<'a> {
 }
 
 fn handle_tinue_req(discord: &Discord, message: &Message) -> Result<()> {
-    let req = TinueRequest { message };
+    let req = TinueRequest::new(&message.content, &message.author.name);
     let start_time = time::Instant::now();
     let ptn = req.get_ptn_string()?;
     let game = parse_game(&ptn).ok_or_else(|| anyhow!("Unable to parse game"))?;
@@ -194,32 +242,88 @@ fn move_s(idx: usize) -> String {
 }
 
 fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
-    let mut size = None;
+    let mut meta = HashMap::new();
     let mut moves = Vec::new();
-    for line in full_ptn.lines() {
-        if line.starts_with("[Size") {
-            size = line
-                .split("\"")
-                .nth(1)
-                .and_then(|x| x.parse::<usize>().ok());
-        } else if line.starts_with("{") {
-            break; // PTN Ninja alternate lines begin
-        } else if !line.starts_with("[") {
-            let colors = &[Color::White, Color::Black]; // We already account for the color swap
-            for mv in line
-                .split_whitespace()
-                .skip(1)
-                .zip(colors.into_iter())
-                .filter_map(|(ptn, c)| GameMove::try_from_ptn_m(ptn, size?, *c))
-            {
-                moves.push(mv);
-            }
-        }
+    let mut color = Color::White;
+    for m in PTN_META.captures_iter(&full_ptn) {
+        meta.insert(m["Key"].to_string(), m["Value"].to_string());
     }
-    match size? {
+    let size = meta.get("Size")?.parse().ok()?;
+    for m in PTN_MOVE.captures_iter(&full_ptn.split("{").next()?) {
+        let mv_str = &m[0];
+        let mut iter = mv_str.chars();
+        let first = iter.next()?;
+        let mv = if first == 'S' {
+            let mut s = String::new();
+            // Lowercase everything besides this first S
+            s.push(first);
+            while let Some(c) = iter.next() {
+                s.push(c.to_ascii_lowercase());
+            }
+            s
+        } else if first == 'C' {
+            let mut s = String::new();
+            // We need to find out if this C is a capstone or a bad square indicator
+            let second = iter.next()?;
+            if second.is_ascii_alphabetic() {
+                // The previous must have been a capstone, leave it capitalized
+                s.push(first);
+                s.push(second.to_ascii_lowercase());
+            } else {
+                // The second must be a number, meaning this should be lowercase c
+                s.push(first.to_ascii_lowercase());
+                s.push(second);
+            }
+            while let Some(c) = iter.next() {
+                s.push(c.to_ascii_lowercase());
+            }
+            s
+        } else {
+            m[0].to_ascii_lowercase()
+        };
+        let mv = GameMove::try_from_ptn_m(&mv, size, color)?;
+        moves.push(mv);
+        color = !color;
+    }
+    // TODO Komi
+    // if let Some(komi) = meta.get("Komi") {
+    //     if komi.parse::<u32>().ok()? != 0 {
+    //         return None;
+    //     }
+    // }
+    if let Some(tps) = meta.get("TPS") {
+        return Some((TakGame::try_from_tps(tps).ok()?, moves));
+    }
+    match size {
         5 => Some((TakGame::Standard5(Board5::new()), moves)),
         6 => Some((TakGame::Standard6(Board6::new()), moves)),
         7 => Some((TakGame::Standard7(Board7::new()), moves)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn ptn_ninja() {
+        let s1 = concat!(
+            "!tinue https://ptn.ninja/NoEQhgLgpgBARAJgAwIQOiQRjZgHHAXWABUBLAW1jk0wC4EBmWgVmcOAGVTp4ALCCAAcAzr", 
+            "QD0YgObdeAVwBGaAMYB7cmLnkwAO0hiIYANYAhFRHYAFADZgAnlABOmeGAdLeANyjbSwldssbewcEeAAzAHcoiNJ5WPYuAC8q", 
+            "AHZ2AGk1UngEdgB5QW9SbUl4YQiwQUIYMGdjZwATABYYJQZWlob2qBaodvkW+XaAMRaAYQbmGDD2sNCxqFC+gGoYAFF2ham1hF", 
+            "WoZgBaGEkWtamwTsOYYanhgDYYBbugA"
+        );
+        let s2 = concat!(
+            "!tinue https://ptn.ninja/NoZQlgLgpgBARABQDYEMCeAVFBrAdAYwHsBbOAXQFgAoYAUQDcoA7CeAeSaTCdmXXOrAAwkkL5", 
+            "s8AIwBWAFwAGGAGoAzPIE0ASlADOAVySs4mgLTrKNcAC9YcAOwbgAMVQQd8ACznBQlAAd3OAAmRzY-Zm4Ac3gdAHd-RwwEEHgADw", 
+            "AaSUzJSSD0vIL8gHoMoKF01I9irJygyXKs1JVi1Lza7NzMiqCStq6azJ7UgDZMosbhmEkYII8NalncIA&name=CIQwlgNgngBACgV", 
+            "wF5IgUxgYgIwGYBsAdLjABQBCaA5mAHa1oBOAlEA&showPTN=false&theme=MYGwhgzhCWxA"
+        );
+        for s in [s1, s2].iter() {
+            let t = TinueRequest::new("", &s);
+            let ptn = t.get_ptn_string().unwrap();
+            let parsed = parse_game(&ptn);
+            assert!(parsed.is_some());
+        }
     }
 }

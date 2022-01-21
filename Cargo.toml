@@ -13,3 +13,5 @@ hyper-native-tls = "*"
 topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "5f26c0e" }
 anyhow = "1"
 dotenv = "0.15"
+regex = "1.5"
+lazy_static = "*"
