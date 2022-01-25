@@ -959,14 +959,14 @@ dependencies = [
 [[package]]
 name = "topaz-tak"
 version = "0.1.0"
-source = "git+https://github.com/Jakur/topaz-tak?rev=5f26c0e#5f26c0e80b79389f344464badddbf0d3a6ac585e"
+source = "git+https://github.com/Jakur/topaz-tak?rev=24de026#24de026da61263fec504fab5046e56807b8b4ca7"
 dependencies = [
  "anyhow",
  "board-game-traits",
  "colorful",
  "crossbeam-channel",
  "getopts",
- "getrandom 0.2.4",
+ "getrandom 0.1.16",
  "lru",
  "rand_core 0.6.3",
  "rand_xoshiro",
