@@ -9,9 +9,8 @@ use topaz_tak::{
 use super::*;
 use discord::model::UserId;
 
-const TOPAZ_ID: UserId = UserId(211376698778714123); // Real Topaz
-                                                     // const TOPAZ_ID: UserId = UserId(166005222794199042);
-const TAK_BOT_ID: UserId = UserId(793658103668539424);
+pub const TOPAZ_ID: UserId = UserId(211376698778714123);
+pub const TAK_BOT_ID: UserId = UserId(793658103668539424);
 
 static LINK_START: &'static str = "<https://ptn.ninja/";
 
@@ -103,6 +102,8 @@ fn find_link(messages: &[Message]) -> Option<String> {
         } else if message.content.starts_with("!tak rematch") {
             break;
         } else if message.content.starts_with("Invalid move.") {
+            break;
+        } else if message.content.starts_with("You are not ") {
             break;
         } else if message.author.id == TAK_BOT_ID && message.content.starts_with(LINK_START) {
             let link = message

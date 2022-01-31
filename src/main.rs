@@ -24,6 +24,7 @@ lazy_static! {
 mod play;
 
 const TAK_TALK: ServerId = ServerId(176389490762448897);
+const CHALLENGES: ChannelId = ChannelId(892609257424453672); // TODO maybe make this automatic
 const NODE_LIMIT: usize = 100_000;
 static TOPAZ: &'static str = "topazbot";
 
@@ -39,14 +40,8 @@ fn main() {
     // Establish and use a websocket connection
     let (mut connection, _) = discord.connect().expect("Discord connection failed!");
     println!("Ready.");
-    let channels = discord
-        .get_server_channels(TAK_TALK)
-        .expect("Failed to get Tak server channels!");
-    let matches: Vec<_> = channels
-        .iter()
-        .filter_map(|c| AsyncChannel::try_new(c))
-        .collect();
-    // TODO check new challenge creation while bot is running
+
+    let mut matches: Vec<_> = get_matches(&discord);
     for m in matches.iter() {
         let channel_id = m.id;
         let messages = discord
@@ -69,6 +64,15 @@ fn main() {
                     // Todo handle this error better
                     if let Err(e) = handle_tinue_req(&discord, &message) {
                         println!("{}", e);
+                    }
+                } else if message.channel_id == CHALLENGES {
+                    if message.content.starts_with("!tak") {
+                        if let Some(user) = message.mentions.into_iter().next() {
+                            if user.id == play::TOPAZ_ID {
+                                // Reset rooms
+                                matches = get_matches(&discord);
+                            }
+                        }
                     }
                 } else if matches
                     .iter()
@@ -115,6 +119,20 @@ fn main() {
             Err(err) => println!("Received error: {:?}", err),
         }
     }
+}
+
+fn handle_new_match(room: &AsyncChannel, discord: &Discord) -> Result<()> {
+    todo!()
+}
+
+fn get_matches(discord: &Discord) -> Vec<AsyncChannel> {
+    let channels = discord
+        .get_server_channels(TAK_TALK)
+        .expect("Failed to get Tak server channels!");
+    channels
+        .iter()
+        .filter_map(|c| AsyncChannel::try_new(c))
+        .collect()
 }
 
 #[derive(Debug)]
@@ -366,7 +384,7 @@ fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
     }
     let size = meta.get("Size")?.parse().ok()?;
     for m in PTN_MOVE.captures_iter(&full_ptn.split("{").next()?) {
-        let mv = parse_move(&m[0], Board6::SIZE, color)?;
+        let mv = parse_move(&m[0], size, color)?;
         moves.push(mv);
         color = !color;
     }
@@ -416,7 +434,13 @@ mod test {
             "pwQAdMLSETCXCAZsw-rhrh9MAEqbVhpgXPzahjcLsfkKYCyvspRTBmFBaoL1ucFSrrjrwWCQCr9gqApxCQqloSybiYLVzj9UDBcIc-vc",
             "YCJAU8vhydrgvrVlWTJqtPv9YQTcGTzdswEco3brminSy-nrJWKAkCJUmDXantLTswvsTwesYkDfpglpWYCNRkA",
         );
-        let s4 = "!tinue https://ptn.ninja/NoEQhgLgpgBARAJgAwIQOiQRjQgzHAXWABUBLAW1jkwE4AuAFgDY6EHDgBlU6eACwgQADgGc6AenEBzHnwCuAIzQBjAPblx88mAB2kcRDABrAEKqIHAAoAbMAE8oAJ0zwAslD6OA4qWvWRVrYOjghuumDEHNwAXlRMHADS6qTwCBwA8kJQOqQ6UvAiAO5gQoQwAIIuCi4mocqhJrgwAMIKDC0uACahIFUMALQVoVChAKIuAGYuAGKhCAq4g+UIg1MAPC1TMJxgobMbu4PTmBudTaNNUO0g7Z0ArDCjD-eDnMrtnFBMLQwAfDALIYA9rNJpgJoIKCYADUAIe5XaYAeuE6DDWmFCqJgDBGa1QMGUDxAD2U3xA30+oWafxgZ1h1JguJaCH+uDAmF+GJgCG6G1wCgQ0IQLk4AqAA";
+        let s4 = concat!(
+            "!tinue https://ptn.ninja/NoEQhgLgpgBARAJgAwIQOiQRjQgzHAXWABUBLAW1jkwE4AuAFgDY6EHDgBlU6eACwgQADgGc6AenEBzHn",
+            "wCuAIzQBjAPblx88mAB2kcRDABrAEKqIHAAoAbMAE8oAJ0zwAslD6OA4qWvWRVrYOjghuumDEHNwAXlRMHADS6qTwCBwA8kJQOqQ6UvAiAO", 
+            "5gQoQwAIIuCi4mocqhJrgwAMIKDC0uACahIFUMALQVoVChAKIuAGYuAGKhCAq4g+UIg1MAPC1TMJxgobMbu4PTmBudTaNNUO0g7Z0ArDCjD",
+            "-eDnMrtnFBMLQwAfDALIYA9rNJpgJoIKCYADUAIe5XaYAeuE6DDWmFCqJgDBGa1QMGUDxAD2U3xA30+oWafxgZ1h1JguJaCH+uDAmF+GJgCG",
+            "6G1wCgQ0IQLk4AqAA"
+        );
         for s in [s1, s2, s3, s4].iter() {
             let t = TinueRequest::new("", &s);
             let ptn = t.get_ptn_string().unwrap();
