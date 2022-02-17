@@ -41,22 +41,8 @@ fn main() {
     let (mut connection, _) = discord.connect().expect("Discord connection failed!");
     println!("Ready.");
 
-    let mut matches: Vec<_> = get_matches(&discord);
-    for m in matches.iter() {
-        let channel_id = m.id;
-        let messages = discord
-            .get_messages(m.id, discord::GetMessages::MostRecent, Some(40))
-            .unwrap();
-        let game =
-            play::search_room(m.id, &discord, true, Some(messages)).expect("Search room failed!");
-        if let (Some(board), Some(topaz_turn)) = (game.board, game.topaz_turn) {
-            if topaz_turn {
-                play::play_async_move(board, channel_id, &discord).expect("Failed to send message");
-            }
-        } else {
-            println!("Could not fully determine game state {}!", channel_id);
-        }
-    }
+    let mut matches = play::Matches::default();
+    matches.update_rooms(&discord).unwrap();
     loop {
         match connection.recv_event() {
             Ok(Event::MessageCreate(message)) => {
@@ -69,45 +55,13 @@ fn main() {
                     if message.content.starts_with("!tak") {
                         if let Some(user) = message.mentions.into_iter().next() {
                             if user.id == play::TOPAZ_ID {
-                                // Reset rooms
-                                matches = get_matches(&discord);
+                                // Check for new rooms
+                                matches.update_rooms(&discord).unwrap();
                             }
                         }
                     }
-                } else if matches
-                    .iter()
-                    .find(|chan| chan.id == message.channel_id)
-                    .is_some()
-                {
-                    if message.content.starts_with("Your turn ") {
-                        if let Ok(game) =
-                            play::search_room(message.channel_id, &discord, true, None)
-                        {
-                            if let (Some(board), Some(topaz_turn)) = (game.board, game.topaz_turn) {
-                                if topaz_turn {
-                                    play::play_async_move(board, message.channel_id, &discord)
-                                        .expect("Failed to send message");
-                                }
-                            } else {
-                                println!(
-                                    "Could not fully determine game state {}!",
-                                    message.channel_id
-                                );
-                            }
-                        }
-                    } else if message.content.starts_with("!topaz position") {
-                        match play::search_room(message.channel_id, &discord, false, None) {
-                            Ok(game) => {
-                                let s = format!("This is the position, right? \n{:?}", game.board);
-                                discord
-                                    .send_message(message.channel_id, &s, "", false)
-                                    .expect("Failed to send message!");
-                            }
-                            Err(e) => {
-                                println!("Position get failed: {:?}", e);
-                            }
-                        }
-                    }
+                } else if let Some(x) = matches.matches.get_mut(&message.channel_id) {
+                    x.do_message(&message, &discord);
                 }
                 // Todo respond while still logged in
             }
@@ -117,48 +71,6 @@ fn main() {
                 break;
             }
             Err(err) => println!("Received error: {:?}", err),
-        }
-    }
-}
-
-fn handle_new_match(room: &AsyncChannel, discord: &Discord) -> Result<()> {
-    todo!()
-}
-
-fn get_matches(discord: &Discord) -> Vec<AsyncChannel> {
-    let channels = discord
-        .get_server_channels(TAK_TALK)
-        .expect("Failed to get Tak server channels!");
-    channels
-        .iter()
-        .filter_map(|c| AsyncChannel::try_new(c))
-        .collect()
-}
-
-#[derive(Debug)]
-struct AsyncChannel {
-    id: ChannelId,
-    player1: String,
-    player2: String,
-}
-
-impl AsyncChannel {
-    pub fn try_new(channel: &PublicChannel) -> Option<Self> {
-        let mut iter = channel.name.split("-🆚-");
-        let p1 = iter.next()?;
-        let p2 = iter.next()?;
-        if iter.next().is_some() {
-            None
-        } else {
-            if p1 == TOPAZ || p2 == TOPAZ {
-                Some(Self {
-                    id: channel.id,
-                    player1: p1.to_string(),
-                    player2: p2.to_string(),
-                })
-            } else {
-                None
-            }
         }
     }
 }
@@ -408,10 +320,6 @@ fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
 #[cfg(test)]
 mod test {
     use super::*;
-    // #[test]
-    // fn playtak() {
-    //     let g1 = ""
-    // }
     #[test]
     fn ptn_ninja() {
         let s1 = concat!(

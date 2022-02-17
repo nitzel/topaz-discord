@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "topaz-tak"
 version = "0.1.0"
-source = "git+https://github.com/Jakur/topaz-tak?rev=24de026#24de026da61263fec504fab5046e56807b8b4ca7"
+source = "git+https://github.com/Jakur/topaz-tak?rev=8a5dd83#8a5dd834c1eecfb093fc8f3cc98ea2c2597450e2"
 dependencies = [
  "anyhow",
  "board-game-traits",
