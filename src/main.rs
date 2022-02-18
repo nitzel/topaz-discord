@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use discord::model::{ChannelId, Event, Message, PublicChannel, ServerId};
 use discord::Discord;
-use dotenv::dotenv;
+use dotenv;
 use hyper::net::HttpsConnector;
 use hyper::Client;
 use hyper_native_tls::NativeTlsClient;
@@ -18,7 +18,7 @@ use topaz_tak::{Color, GameMove, TakBoard, TakGame};
 
 lazy_static! {
     static ref PTN_META: Regex = Regex::new(r#"\[(?P<Key>.*?) "(?P<Value>.*?)"\]"#).unwrap();
-    static ref PTN_MOVE: Regex = Regex::new(r#"([SCsc1-8]?[A-Ha-h]\d[+-<>]?\d*)"#).unwrap();
+    static ref PTN_MOVE: Regex = Regex::new(r#"([SCsc1-8]?[A-Ha-h]\d[+-<>]?\d*['"]*)"#).unwrap();
 }
 
 mod play;
@@ -28,8 +28,19 @@ const CHALLENGES: ChannelId = ChannelId(892609257424453672); // TODO maybe make 
 const NODE_LIMIT: usize = 100_000;
 static TOPAZ: &'static str = "topazbot";
 
+fn read_dotenv() {
+    for arg in env::args().skip(1) {
+        let path = std::path::Path::new(&arg);
+        if path.exists() {
+            dotenv::from_path(path).ok();
+            return;
+        }
+    }
+    dotenv::dotenv().ok();
+}
+
 fn main() {
-    dotenv().ok();
+    read_dotenv();
     // Log in to Discord using a bot token from the environment
     // .env file in the root of the project should have format DISCORD_TOKEN="[TOKEN]"
     let (_, token) = env::vars()
@@ -55,6 +66,7 @@ fn main() {
                     if message.content.starts_with("!tak") {
                         if let Some(user) = message.mentions.into_iter().next() {
                             if user.id == play::TOPAZ_ID {
+                                println!("Searching for new rooms...");
                                 // Check for new rooms
                                 matches.update_rooms(&discord).unwrap();
                             }
@@ -253,7 +265,7 @@ fn move_s(idx: usize) -> String {
 }
 
 fn parse_move(mv_str: &str, size: usize, color: Color) -> Option<GameMove> {
-    let mut iter = mv_str.chars();
+    let mut iter = mv_str.chars().take_while(|&c| c != '\'' && c != '"');
     let first = iter.next()?;
     let mv = if first == 'S' || first == 's' {
         let mut s = String::new();
@@ -281,7 +293,12 @@ fn parse_move(mv_str: &str, size: usize, color: Color) -> Option<GameMove> {
         }
         s
     } else {
-        mv_str.to_ascii_lowercase()
+        let mut string = String::new();
+        string.push(first.to_ascii_lowercase());
+        for c in iter.map(|c| c.to_ascii_lowercase()) {
+            string.push(c);
+        }
+        string
     };
     let mv = GameMove::try_from_ptn_m(&mv, size, color)?;
     Some(mv)
@@ -320,6 +337,19 @@ fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
 #[cfg(test)]
 mod test {
     use super::*;
+    #[test]
+    fn tak_tinue_marks() {
+        let s1 = concat!(
+            "!tinue https://ptn.ninja/NoEQhgLgpgBARAJgAwIQOhWgjAdjgXQFgAoYAZQEtp4ALCCABwGcAuAejYHMqaBXAIzQBjAPYBbN", 
+            "nzFgAdpDYQwAawBCIiARLAACgBswATygAnLPAAqIhmABeajUVJ7DJhPACC-A0yabSlG1g4ADY-YAB5BigZChlOeCYAdzAGP", 
+            "xIsNBgAM2CYMCwSdBgAEwAWGCgAVhIAZkyocuLq4lLMoXKAYWKakkq2yph+ZuDM-nKoHuIcNpqSmoBqEgAOTO6K4JIATlHZq", 
+            "AR0pEyOrN2agB50jJK3YqwAciA&name=CoewDghgXgQiAuACAbgZ0QQQEYE9XoDYAPAxAJgAYyyA6KmgRgHYg"
+        );
+        let t = TinueRequest::new("", &s1);
+        let ptn = t.get_ptn_string().unwrap();
+        let parsed = parse_game(&ptn);
+        assert!(parsed.is_some());
+    }
     #[test]
     fn ptn_ninja() {
         let s1 = concat!(

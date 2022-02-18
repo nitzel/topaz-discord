@@ -39,6 +39,8 @@ impl Matches {
                 // If we didn't get the full information that we needed request a link
                 if game.search_room(&messages).is_none() {
                     game.request_link(discord)?;
+                } else {
+                    game.make_move(discord).expect("Unable to make move!");
                 }
                 self.matches.insert(game.channel_id, game);
             }
@@ -111,22 +113,14 @@ impl AsyncGameState {
             self.invalidate_board();
         } else if message.content.starts_with("You are not ") {
             self.invalidate_board();
-        } else if message.author.id == TAK_BOT_ID
-            && message.content.starts_with(LINK_START)
-            && self.board.is_none()
-        {
+        } else if message.author.id == TAK_BOT_ID && message.content.starts_with(LINK_START) {
             let link: String = message
                 .content
                 .chars()
                 .filter(|&c| c != '<' && c != '>')
                 .collect();
             self.board = handle_link(&link);
-            if self.topaz_turn().unwrap() {
-                let new_board =
-                    play_async_move(self.board.take().unwrap(), message.channel_id, &discord)
-                        .expect("Failed to send message");
-                self.board = Some(new_board);
-            }
+            self.make_move(discord).expect("Unable to make move!");
         } else if message.content.starts_with("!topaz position") {
             let s = format!("This is the position, right? \n{:?}", self.board);
             discord
@@ -141,6 +135,17 @@ impl AsyncGameState {
                 }
             }
         }
+    }
+    pub fn make_move(&mut self, discord: &Discord) -> Option<()> {
+        if self.topaz_turn()? {
+            if self.board.as_ref()?.game_result().is_some() {
+                return Some(());
+            }
+            let new_board = play_async_move(self.board.take().unwrap(), self.channel_id, &discord)
+                .expect("Failed to send message");
+            self.board = Some(new_board);
+        }
+        Some(())
     }
     pub fn request_link(&self, discord: &Discord) -> Result<()> {
         discord.send_message(self.channel_id, "!tak link", "", false)?;
@@ -213,7 +218,7 @@ pub fn play_async_move(mut board: Board6, channel: ChannelId, discord: &Discord)
         let pv_move = tinue_search.principal_variation().into_iter().next();
         board = tinue_search.board;
         if let Some(mv) = pv_move {
-            mv.to_ptn::<Board6>()
+            format!("{}\"", mv.to_ptn::<Board6>())
         } else {
             // Maybe it's just one ply?
             let road_move = find_road_move(&mut board);
@@ -230,10 +235,21 @@ pub fn play_async_move(mut board: Board6, channel: ChannelId, discord: &Discord)
         if board.move_num() <= 6 {
             eval.add_noise();
         }
-        // let message = { 0 };
-        search(&mut board, &eval, &mut info)
+        let best_move = search(&mut board, &eval, &mut info)
             .and_then(|x| x.best_move())
-            .ok_or_else(|| anyhow!("No best move from game search!"))?
+            .ok_or_else(|| anyhow!("No best move from game search!"))?;
+        let mv = GameMove::try_from_ptn(&best_move, &board).unwrap();
+        let rev = board.do_move(mv);
+        board.null_move();
+        let mut moves = Vec::new();
+        let tak = board.can_make_road(&mut moves, None).is_some();
+        board.rev_null_move();
+        board.reverse_move(rev);
+        if tak {
+            format!("{}'", best_move)
+        } else {
+            best_move
+        }
     };
     std::thread::sleep(Duration::from_secs(5));
     discord.send_message(channel, &best_move, "", false)?;
