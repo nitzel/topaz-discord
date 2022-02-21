@@ -896,6 +896,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "telnet"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99f2cc260bea5219955ab4832c9600a41b87101d280939edae6dd10b3c68a4f3"
+
+[[package]]
 name = "tempfile"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -959,17 +965,19 @@ dependencies = [
 [[package]]
 name = "topaz-tak"
 version = "0.1.0"
-source = "git+https://github.com/Jakur/topaz-tak?rev=8a5dd83#8a5dd834c1eecfb093fc8f3cc98ea2c2597450e2"
+source = "git+https://github.com/Jakur/topaz-tak?rev=b2042c1#b2042c1ba336345692ee3c4fcb1189fe28ba735c"
 dependencies = [
  "anyhow",
  "board-game-traits",
  "colorful",
  "crossbeam-channel",
+ "dotenv",
  "getopts",
  "getrandom 0.1.16",
  "lru",
  "rand_core 0.6.3",
  "rand_xoshiro",
+ "telnet",
  "termtree",
 ]
 

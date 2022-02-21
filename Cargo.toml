@@ -10,7 +10,7 @@ lz-str = "0.1.0"
 discord = { git = "https://github.com/SpaceManiac/discord-rs" }
 hyper = "*"
 hyper-native-tls = "*"
-topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "8a5dd83" }
+topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "b2042c1" }
 anyhow = "1"
 dotenv = "0.15"
 regex = "1.5"
