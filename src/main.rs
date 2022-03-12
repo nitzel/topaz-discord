@@ -19,6 +19,7 @@ use topaz_tak::{Color, GameMove, TakBoard, TakGame};
 lazy_static! {
     static ref PTN_META: Regex = Regex::new(r#"\[(?P<Key>.*?) "(?P<Value>.*?)"\]"#).unwrap();
     static ref PTN_MOVE: Regex = Regex::new(r#"([SCsc1-8]?[A-Ha-h]\d[+-<>]?\d*['"]*)"#).unwrap();
+    static ref VER_RE: Regex = Regex::new(r#"rev = "\S+""#).unwrap();
 }
 
 mod play;
@@ -39,6 +40,19 @@ fn read_dotenv() {
     dotenv::dotenv().ok();
 }
 
+fn read_cargo_toml(s: &str) -> Option<String> {
+    let path = std::path::Path::new(s);
+    let data = std::fs::read_to_string(path).ok()?;
+    for line in data.lines() {
+        if line.starts_with("topaz-tak") {
+            if let Some(ver) = VER_RE.find(line) {
+                return Some(ver.as_str().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn main() {
     read_dotenv();
     // Log in to Discord using a bot token from the environment
@@ -46,6 +60,10 @@ fn main() {
     let (_, token) = env::vars()
         .find(|(k, _)| k == "DISCORD_TOKEN")
         .expect("Could not read .env file!");
+    let version = env::vars()
+        .find(|(k, _)| k == "CARGO_FILE")
+        .and_then(|(_, v)| read_cargo_toml(&v))
+        .unwrap_or_else(|| "UNKNOWN".to_string());
     let discord = Discord::from_bot_token(&token).expect("Discord login failed!");
 
     // Establish and use a websocket connection
@@ -73,7 +91,18 @@ fn main() {
                         }
                     }
                 } else if let Some(x) = matches.matches.get_mut(&message.channel_id) {
-                    x.do_message(&message, &discord);
+                    if message.content.starts_with("!topaz version") {
+                        discord
+                            .send_message(
+                                message.channel_id,
+                                &format!("Version: {}", version),
+                                "",
+                                false,
+                            )
+                            .unwrap();
+                    } else {
+                        x.do_message(&message, &discord);
+                    }
                 }
                 // Todo respond while still logged in
             }
@@ -312,24 +341,43 @@ fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
         meta.insert(m["Key"].to_string(), m["Value"].to_string());
     }
     let size = meta.get("Size")?.parse().ok()?;
-    for m in PTN_MOVE.captures_iter(&full_ptn.split("{").next()?) {
+    let moves_text = full_ptn.split("Opening").last()?.split("{").next()?;
+    for m in PTN_MOVE.captures_iter(&moves_text) {
         let mv = parse_move(&m[0], size, color)?;
         moves.push(mv);
         color = !color;
     }
     // TODO Komi
-    // if let Some(komi) = meta.get("Komi") {
-    //     if komi.parse::<u32>().ok()? != 0 {
-    //         return None;
-    //     }
-    // }
+    let mut komi = 0;
+    if let Some(k) = meta.get("Komi") {
+        komi = match k.as_str() {
+            "0" => 0,
+            "0.5" => 1,
+            "1" => 2,
+            "1.5" => 3,
+            "2" => 4,
+            "2.5" => 5,
+            "3" => 6,
+            _ => 0,
+        };
+        // if let Ok(val) = k.parse::<u8>() {
+        //     komi = val * 2;
+        // }
+    }
     if let Some(tps) = meta.get("TPS") {
-        return Some((TakGame::try_from_tps(tps).ok()?, moves));
+        let game = TakGame::try_from_tps(tps).ok()?;
+        let game = match game {
+            TakGame::Standard5(b) => TakGame::Standard5(b.with_komi(komi)),
+            TakGame::Standard6(b) => TakGame::Standard6(b.with_komi(komi)),
+            TakGame::Standard7(b) => TakGame::Standard7(b.with_komi(komi)),
+            _ => return None,
+        };
+        return Some((game, moves));
     }
     match size {
-        5 => Some((TakGame::Standard5(Board5::new()), moves)),
-        6 => Some((TakGame::Standard6(Board6::new()), moves)),
-        7 => Some((TakGame::Standard7(Board7::new()), moves)),
+        5 => Some((TakGame::Standard5(Board5::new().with_komi(komi)), moves)),
+        6 => Some((TakGame::Standard6(Board6::new().with_komi(komi)), moves)),
+        7 => Some((TakGame::Standard7(Board7::new().with_komi(komi)), moves)),
         _ => None,
     }
 }
@@ -379,13 +427,35 @@ mod test {
             "-eDnMrtnFBMLQwAfDALIYA9rNJpgJoIKCYADUAIe5XaYAeuE6DDWmFCqJgDBGa1QMGUDxAD2U3xA30+oWafxgZ1h1JguJaCH+uDAmF+GJgCG",
             "6G1wCgQ0IQLk4AqAA"
         );
-        for s in [s1, s2, s3, s4].iter() {
+        let s5 = concat!(
+            "!tinue https://ptn.ninja/NoEQhgLgpgBARAJgAwIQOiQZg5uBdYAFQEsBbWOARgHYAuSgVloQf2AGVjp4ALCCAA4BnWgHpRAcy48ArgC", 
+            "M0AYwD2pUbNJgAdpFEQwAawBCyiGwAKAGzABPKACdK8ALLawhC9bv2E8c2BlLNk4ALwoANjYAaVVieAQ2AHkBKC1iLQl4IQB3MAF8GDAnADN", 
+            "wmAATBgqAFhhFKsVauSqQMqgq8vCAWhgoWoBRTBgAYXKhuVqxgGo6scKG6pnGkaGEcsWYIWKqzEqAHhhtg86YfrLi2vZ1mDkhgEFx3wAxIcaD", 
+            "4cwD9kV73x+DuRORRA3zlP5DBj1LqUSaYHpyMpgBAAPhgmFu0N8awQx18QnqFVeDAO9SAA" 
+        );
+        let s6 = concat!(
+            "!tinue https://ptn.ninja/NoEQhgLgpgBARAJgAwIQOiQZjQRiXAXWABUBLAW1kRwC4cB2GgVnsOAGVTp4ALCCAA4BnGgHpRAcy48ArgCM", 
+            "0AYwD25UbPJgAdpFEQwAawBCyiGwAKAGzABPKACcc8AIJybQoRet37CeMWUBMAAvEzMiTmCqADY2AGlVUnh0JjYAeQEoLVItCXghAHcwAUIgA"
+        );
+        let s7 = concat!(
+            "!tinue https://ptn.ninja/NoEQhgLgpgBARAJgAwIQOiQZjQRgXAXQFgAoYAFQEsBbWOHANgC4BWFpzTQ04AZUujwAFhAgAHAM5MA9NIDmA", 
+            "oQFcARmgDGAe2rTl1MADtI0iGADWAIU0RuZAAoAbMAE8oAJxzwkADxYB2BgBOBnUQ22BHF3cEeHJNMTAALysbYjJ+RLoGcIBpbUp4fDTgAHkxK", 
+            "ANKAzl4CQB3MDFbUhw0GDAcIA&name=AwDwrA7AbAnFDGCAEA3AzkgKgewA4EMAvAIWwBckoQokAmYW2gOmAGYmBGWgWg6ibBgmrVkA"
+        );
+        let komis = [0, 0, 0, 0, 4, 5];
+        for (idx, s) in [s1, s2, s3, s4, s5, s6, s7].iter().enumerate() {
             let t = TinueRequest::new("", &s);
             let ptn = t.get_ptn_string().unwrap();
-            if s == &s4 {
-                println!("{}", ptn);
-            }
             let parsed = parse_game(&ptn);
+            if s == &s7 {
+                let game = &parsed.as_ref().unwrap().0;
+                match game {
+                    TakGame::Standard6(g) => {
+                        assert_eq!(g.ply(), 3);
+                    }
+                    _ => assert!(false),
+                }
+            }
             if s == &s3 {
                 if let Some((_, ref moves)) = parsed {
                     let count = moves
@@ -393,6 +463,15 @@ mod test {
                         .filter(|m| &m.to_ptn::<Board6>() == "Sc2")
                         .count();
                     assert_eq!(count, 3);
+                }
+            }
+            if idx == 4 || idx == 5 {
+                let game = &parsed.as_ref().unwrap().0;
+                match game {
+                    TakGame::Standard6(g) => {
+                        assert_eq!(g.komi(), komis[idx]);
+                    }
+                    _ => assert!(false),
                 }
             }
             assert!(parsed.is_some());

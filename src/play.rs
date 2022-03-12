@@ -22,6 +22,7 @@ pub struct Matches {
 
 impl Matches {
     pub fn update_rooms(&mut self, discord: &Discord) -> Result<()> {
+        std::thread::sleep(Duration::from_secs(5));
         let channels = discord
             .get_server_channels(TAK_TALK)
             .expect("Failed to get Tak server channels!");
@@ -45,6 +46,7 @@ impl Matches {
                 self.matches.insert(game.channel_id, game);
             }
         }
+        dbg!(self.matches.len());
         Ok(())
     }
 }
@@ -126,6 +128,26 @@ impl AsyncGameState {
             discord
                 .send_message(message.channel_id, &s, "", false)
                 .expect("Failed to send message!");
+        } else if message.content.starts_with("!topaz search") {
+            if let Some(ref mut board) = self.board {
+                let mut info = SearchInfo::new(12, 2 << 20).max_time(20);
+                let eval = Weights6::default();
+                let search_res = search(board, &eval, &mut info);
+                if let Some(res) = search_res {
+                    discord
+                        .send_message(message.channel_id, &format!("{}", res), "", false)
+                        .unwrap();
+                } else {
+                    discord
+                        .send_message(
+                            message.channel_id,
+                            "Sorry I don't know the board state right now.",
+                            "",
+                            false,
+                        )
+                        .unwrap();
+                }
+            }
         } else {
             if let Some(ref mut board) = self.board {
                 if let Some(m) =
@@ -137,7 +159,8 @@ impl AsyncGameState {
         }
     }
     pub fn make_move(&mut self, discord: &Discord) -> Option<()> {
-        if self.topaz_turn()? {
+        let turn = self.topaz_turn()?;
+        if turn {
             if self.board.as_ref()?.game_result().is_some() {
                 return Some(());
             }
@@ -230,7 +253,7 @@ pub fn play_async_move(mut board: Board6, channel: ChannelId, discord: &Discord)
         }
     } else {
         board = tinue_search.board;
-        let mut info = SearchInfo::new(6, 1000000).max_time(30);
+        let mut info = SearchInfo::new(12, 2 << 20).max_time(20);
         let mut eval = Weights6::default();
         if board.move_num() <= 6 {
             eval.add_noise();
