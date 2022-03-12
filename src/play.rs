@@ -183,6 +183,10 @@ impl AsyncGameState {
             if message.content.starts_with(LINK_START) {
                 break;
             }
+            // The person may be discussing the move in the context of a longer sentence
+            if message.content.split_whitespace().nth(1).is_some() {
+                continue;
+            }
             if super::parse_move(&message.content, Board6::SIZE, board.side_to_move()).is_some() {
                 extra_moves.push(&message.content);
             }
