@@ -56,6 +56,7 @@ pub struct AsyncGameState {
     pub board: Option<Board6>,
     player1: String,
     player2: String,
+    undo_request: bool,
 }
 
 impl AsyncGameState {
@@ -72,6 +73,7 @@ impl AsyncGameState {
                     board: None,
                     player1: p1.to_string(),
                     player2: p2.to_string(),
+                    undo_request: false,
                 })
             } else {
                 None
@@ -108,6 +110,11 @@ impl AsyncGameState {
                 }
             }
         } else if message.content.starts_with("!tak undo") {
+            if self.undo_request {
+                if message.author.id != TOPAZ_ID {
+                    self.undo_request = false;
+                }
+            }
             self.invalidate_board();
         } else if message.content.starts_with("!tak rematch") {
             self.invalidate_board();
@@ -115,6 +122,12 @@ impl AsyncGameState {
             self.invalidate_board();
         } else if message.content.starts_with("You are not ") {
             self.invalidate_board();
+        } else if message.content.starts_with("!topaz undo") {
+            self.undo_request = true;
+            std::thread::sleep(Duration::from_secs(2));
+            discord
+                .send_message(message.channel_id, "!tak undo", "", false)
+                .unwrap();
         } else if message.author.id == TAK_BOT_ID && message.content.starts_with(LINK_START) {
             let link: String = message
                 .content
@@ -128,7 +141,9 @@ impl AsyncGameState {
             discord
                 .send_message(message.channel_id, &s, "", false)
                 .expect("Failed to send message!");
-        } else if message.content.starts_with("!topaz search") {
+        } else if message.content.starts_with("!topaz search")
+            || message.content.starts_with("!topaz analyze")
+        {
             if let Some(ref mut board) = self.board {
                 let mut info = SearchInfo::new(12, 2 << 20).max_time(20);
                 let eval = Weights6::default();
@@ -159,7 +174,7 @@ impl AsyncGameState {
         }
     }
     pub fn make_move(&mut self, discord: &Discord) -> Option<()> {
-        let turn = self.topaz_turn()?;
+        let turn = self.topaz_turn()? && !self.undo_request;
         if turn {
             if self.board.as_ref()?.game_result().is_some() {
                 return Some(());
