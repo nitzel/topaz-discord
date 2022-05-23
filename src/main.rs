@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::{env, time};
 use topaz_tak::board::{Board5, Board6, Board7};
-use topaz_tak::generate_all_moves;
 use topaz_tak::search::proof::TinueSearch;
+use topaz_tak::{generate_all_moves, Position};
 use topaz_tak::{Color, GameMove, TakBoard, TakGame};
 
 lazy_static! {
@@ -372,6 +372,15 @@ fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
             TakGame::Standard7(b) => TakGame::Standard7(b.with_komi(komi)),
             _ => return None,
         };
+        if let Color::Black = game.side_to_move() {
+            for i in 0..moves.len() {
+                let mv = moves[i];
+                if mv.is_place_move() {
+                    moves[i] =
+                        GameMove::from_placement(mv.place_piece().swap_color(), mv.src_index());
+                }
+            }
+        }
         return Some((game, moves));
     }
     match size {
@@ -397,6 +406,29 @@ mod test {
         let ptn = t.get_ptn_string().unwrap();
         let parsed = parse_game(&ptn);
         assert!(parsed.is_some());
+    }
+    #[test]
+    fn start_from_tps_black() {
+        let s1 = concat!(
+            "https://ptn.ninja/NoFQCgygBARATAGgIwMUpa5IggHgehRThKwGFlUc581UTsrkNGC7F3DVn04L1KSWtw4YcRKHCgAWOD", 
+            "AC6wACIBDAC4BTWHAAMJAHQ7p+kgtABLALZaYOpAC4AzADZ7SHWYjnNsABZq1AAcAZ3t8fABzb18AVwAjfQBjAHtLfFjLFQA7", 
+            "dXw1FQBrACFktTMwABsVAE8NACckWBBkwJUALxKyxUqa+qkYFQrzZKy9T3M2m2czAGlU820zAHlAjSzzLIjYYIB3FUCFKEcAE2", 
+            "cAWhlE6QuAM2cjjWkAPigro5vpAGoMV+cAHkkGn+AHIjsckE8fsc4J9QcdrlB4aC4MdHJ8gA"
+        );
+        let tps = "2,12,x,21S,1,221S/1,1,22221C,1112,2S,21/2,1,2,112S,1,x/2,1,22221S,2,1,2/1,2,11112C,1,1,1/2,2,2,x,12,112S 1 49";
+        let ptn = get_ptn_string(s1).unwrap();
+        let (mut game, moves) = parse_game(&ptn).unwrap();
+        for mv in moves {
+            game.do_move(mv);
+        }
+        match game {
+            TakGame::Standard6(board) => {
+                let s = format!("{:?}", board);
+                assert_eq!(tps, s);
+                println!("{}", s);
+            }
+            _ => assert!(false),
+        }
     }
     #[test]
     fn ptn_ninja() {
@@ -447,15 +479,6 @@ mod test {
             let t = TinueRequest::new("", &s);
             let ptn = t.get_ptn_string().unwrap();
             let parsed = parse_game(&ptn);
-            if s == &s7 {
-                let game = &parsed.as_ref().unwrap().0;
-                match game {
-                    TakGame::Standard6(g) => {
-                        assert_eq!(g.ply(), 3);
-                    }
-                    _ => assert!(false),
-                }
-            }
             if s == &s3 {
                 if let Some((_, ref moves)) = parsed {
                     let count = moves

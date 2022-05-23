@@ -65,9 +65,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "board-game-traits"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f142875a8746cee0aec9350872730b3960c2df6d43766882d85827a1938b12e"
+checksum = "3f0c0fc76324ee558f1c6239a069c3101d74286eedd7d9b1e307d47b4f039c23"
 
 [[package]]
 name = "byteorder"
@@ -423,6 +423,28 @@ checksum = "2684d4c2e97d99848d30b324b00c8fcc7e5c897b7cbb5819b09e7c90e8baf212"
 dependencies = [
  "mime 0.3.16",
  "unicase 2.6.0",
+]
+
+[[package]]
+name = "mini-internal"
+version = "0.1.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60bbf2d78a45808eba478a0660f050bbce70dafc011e275cf00f6f8500a8be88"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "miniserde"
+version = "0.1.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a89fcaf0064d3361240ae91a1f773d874302a62b4e6fdbd37b2888cb7d5aba3e"
+dependencies = [
+ "itoa",
+ "mini-internal",
+ "ryu",
 ]
 
 [[package]]
@@ -925,7 +947,7 @@ dependencies = [
 [[package]]
 name = "topaz-tak"
 version = "0.1.0"
-source = "git+https://github.com/Jakur/topaz-tak?rev=fbbd842#fbbd842a704ba7a2947be48b98bae4ca139fa2d1"
+source = "git+https://github.com/Jakur/topaz-tak?rev=f472821#f4728213164fb7b18e237b91e9f122139705cfb4"
 dependencies = [
  "anyhow",
  "board-game-traits",
@@ -936,6 +958,7 @@ dependencies = [
  "getopts",
  "getrandom",
  "instant",
+ "miniserde",
  "rand_core 0.6.3",
  "rand_xoshiro",
  "telnet",

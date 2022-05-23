@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use topaz_tak::{
-    eval::Weights6,
-    search::{search, SearchInfo},
-    Position,
+    eval::{Evaluator, Weights5, Weights6},
+    search::{search, SearchInfo, SearchOutcome},
+    Position, TakGame, TimeBank,
 };
 
 use super::*;
@@ -12,6 +12,8 @@ use discord::model::UserId;
 
 pub const TOPAZ_ID: UserId = UserId(211376698778714123);
 pub const TAK_BOT_ID: UserId = UserId(793658103668539424);
+const MAX_DEPTH: usize = 20;
+const GOAL_TIME: u64 = 20_000;
 
 static LINK_START: &'static str = "<https://ptn.ninja/";
 
@@ -53,7 +55,7 @@ impl Matches {
 
 pub struct AsyncGameState {
     pub channel_id: ChannelId,
-    pub board: Option<Board6>,
+    pub board: Option<TakGame>,
     player1: String,
     player2: String,
     undo_request: bool,
@@ -101,9 +103,17 @@ impl AsyncGameState {
                 .is_some()
             {
                 if let Some(true) = self.topaz_turn() {
-                    let new_board =
-                        play_async_move(self.board.take().unwrap(), message.channel_id, &discord)
-                            .expect("Failed to send message");
+                    let new_board = match self.board.take().unwrap() {
+                        TakGame::Standard5(board) => TakGame::Standard5(
+                            play_async_move::<Weights5>(board, message.channel_id, &discord)
+                                .expect("Failed to send message"),
+                        ),
+                        TakGame::Standard6(board) => TakGame::Standard6(
+                            play_async_move::<Weights6>(board, message.channel_id, &discord)
+                                .expect("Failed to send message"),
+                        ),
+                        _ => todo!(),
+                    };
                     self.board = Some(new_board);
                 } else {
                     self.request_link(discord).unwrap();
@@ -137,7 +147,7 @@ impl AsyncGameState {
             self.board = handle_link(&link);
             self.make_move(discord).expect("Unable to make move!");
         } else if message.content.starts_with("!topaz position") {
-            let s = format!("This is the position, right? \n{:?}", self.board);
+            let s = format!("This is the position, right? \n{}", debug_tps(&self.board));
             discord
                 .send_message(message.channel_id, &s, "", false)
                 .expect("Failed to send message!");
@@ -145,28 +155,28 @@ impl AsyncGameState {
             || message.content.starts_with("!topaz analyze")
         {
             if let Some(ref mut board) = self.board {
-                let mut info = SearchInfo::new(12, 2 << 20).max_time(20);
-                let eval = Weights6::default();
-                let search_res = search(board, &eval, &mut info);
-                if let Some(res) = search_res {
-                    discord
-                        .send_message(message.channel_id, &format!("{}", res), "", false)
-                        .unwrap();
-                } else {
-                    discord
-                        .send_message(
-                            message.channel_id,
-                            "Sorry I don't know the board state right now.",
-                            "",
-                            false,
-                        )
-                        .unwrap();
-                }
+                let res = match board {
+                    TakGame::Standard5(board) => format!("{}", analyze_pos::<Weights5>(board)),
+                    TakGame::Standard6(board) => format!("{}", analyze_pos::<Weights6>(board)),
+                    _ => todo!(),
+                };
+                discord
+                    .send_message(message.channel_id, &format!("{}", res), "", false)
+                    .unwrap();
+            } else {
+                discord
+                    .send_message(
+                        message.channel_id,
+                        "Sorry I don't know the board state right now.",
+                        "",
+                        false,
+                    )
+                    .unwrap();
             }
         } else {
             if let Some(ref mut board) = self.board {
                 if let Some(m) =
-                    super::parse_move(&message.content, Board6::SIZE, board.side_to_move())
+                    super::parse_move(&message.content, get_size(board), board.side_to_move())
                 {
                     board.do_move(m);
                 }
@@ -179,8 +189,17 @@ impl AsyncGameState {
             if self.board.as_ref()?.game_result().is_some() {
                 return Some(());
             }
-            let new_board = play_async_move(self.board.take().unwrap(), self.channel_id, &discord)
-                .expect("Failed to send message");
+            let new_board = match self.board.take().unwrap() {
+                TakGame::Standard5(board) => TakGame::Standard5(
+                    play_async_move::<Weights5>(board, self.channel_id, &discord)
+                        .expect("Failed to send message"),
+                ),
+                TakGame::Standard6(board) => TakGame::Standard6(
+                    play_async_move::<Weights6>(board, self.channel_id, &discord)
+                        .expect("Failed to send message"),
+                ),
+                _ => return None,
+            };
             self.board = Some(new_board);
         }
         Some(())
@@ -194,6 +213,7 @@ impl AsyncGameState {
         let game_link = find_link(messages)?;
         let mut board = handle_link(&game_link)?;
         let mut extra_moves = Vec::new();
+        let size = get_size(&board);
         for message in messages.iter() {
             if message.content.starts_with(LINK_START) {
                 break;
@@ -202,12 +222,12 @@ impl AsyncGameState {
             if message.content.split_whitespace().nth(1).is_some() {
                 continue;
             }
-            if super::parse_move(&message.content, Board6::SIZE, board.side_to_move()).is_some() {
+            if super::parse_move(&message.content, size, board.side_to_move()).is_some() {
                 extra_moves.push(&message.content);
             }
         }
         for mv in extra_moves.into_iter().rev() {
-            let m = super::parse_move(&mv, Board6::SIZE, board.side_to_move()).unwrap();
+            let m = super::parse_move(&mv, size, board.side_to_move()).unwrap();
             board.do_move(m);
         }
         self.board = Some(board);
@@ -215,20 +235,42 @@ impl AsyncGameState {
     }
 }
 
-fn handle_link(game_link: &str) -> Option<Board6> {
-    let ptn = super::get_ptn_string(&game_link).expect("Valid ptn string!");
-    let game = super::parse_game(&ptn)?;
+fn get_size(game: &TakGame) -> usize {
     match game {
-        (TakGame::Standard6(mut board), moves) => {
-            for m in moves {
-                board.do_move(m);
-            }
-            return Some(board);
-        }
-        _ => {
-            return None;
-        }
+        TakGame::Standard5(_) => Board5::SIZE,
+        TakGame::Standard6(_) => Board6::SIZE,
+        TakGame::Standard7(_) => Board7::SIZE,
+        _ => 6,
     }
+}
+
+fn analyze_pos<E: Evaluator + Default>(board: &mut E::Game) -> SearchOutcome<E::Game> {
+    let mut info = SearchInfo::new(MAX_DEPTH, 2 << 20).time_bank(TimeBank::flat(GOAL_TIME));
+    let eval = E::default();
+    let search_res = search(board, &eval, &mut info);
+    search_res.unwrap()
+}
+
+fn debug_tps(game: &Option<TakGame>) -> String {
+    if let Some(game) = game {
+        match game {
+            TakGame::Standard5(board) => format!("{:?}", board),
+            TakGame::Standard6(board) => format!("{:?}", board),
+            TakGame::Standard7(board) => format!("{:?}", board),
+            _ => "UNK".to_string(),
+        }
+    } else {
+        return "None".to_string();
+    }
+}
+
+fn handle_link(game_link: &str) -> Option<TakGame> {
+    let ptn = super::get_ptn_string(&game_link).expect("Valid ptn string!");
+    let (mut game, moves) = super::parse_game(&ptn)?;
+    for m in moves {
+        game.do_move(m);
+    }
+    Some(game)
 }
 
 fn find_link(messages: &[Message]) -> Option<String> {
@@ -254,29 +296,33 @@ fn find_link(messages: &[Message]) -> Option<String> {
     None
 }
 
-pub fn play_async_move(mut board: Board6, channel: ChannelId, discord: &Discord) -> Result<Board6> {
+pub fn play_async_move<E: Evaluator + Default>(
+    mut board: E::Game,
+    channel: ChannelId,
+    discord: &Discord,
+) -> Result<E::Game> {
     let mut tinue_search = TinueSearch::new(board).limit(NODE_LIMIT * 5).quiet();
     let best_move = if Some(true) == tinue_search.is_tinue() {
         let pv_move = tinue_search.principal_variation().into_iter().next();
         board = tinue_search.board;
         if let Some(mv) = pv_move {
-            format!("{}\"", mv.to_ptn::<Board6>())
+            format!("{}\"", mv.to_ptn::<E::Game>())
         } else {
             // Maybe it's just one ply?
             let road_move = find_road_move(&mut board);
             if let Some(mv) = road_move {
-                mv.to_ptn::<Board6>()
+                mv.to_ptn::<E::Game>()
             } else {
                 return Err(anyhow!("Failed getting tinue pv search / road move!"));
             }
         }
     } else {
         board = tinue_search.board;
-        let mut info = SearchInfo::new(12, 2 << 20).max_time(20);
-        let mut eval = Weights6::default();
-        if board.move_num() <= 6 {
-            eval.add_noise();
-        }
+        let mut info = SearchInfo::new(MAX_DEPTH, 2 << 20).time_bank(TimeBank::flat(GOAL_TIME));
+        let mut eval = E::default();
+        // if board.move_num() <= 6 {
+        //     eval.add_noise();
+        // }
         let best_move = search(&mut board, &eval, &mut info)
             .and_then(|x| x.best_move())
             .ok_or_else(|| anyhow!("No best move from game search!"))?;
