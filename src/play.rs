@@ -28,27 +28,35 @@ impl Matches {
         let channels = discord
             .get_server_channels(TAK_TALK)
             .expect("Failed to get Tak server channels!");
-        for mut game in channels
+        for game in channels
             .iter()
             .filter_map(|chan| AsyncGameState::try_new(chan))
         {
-            // If we are not yet tracking this game room
-            if !self.matches.contains_key(&game.channel_id) {
-                let messages = discord.get_messages(
-                    game.channel_id,
-                    discord::GetMessages::MostRecent,
-                    Some(16),
-                )?;
-                // If we didn't get the full information that we needed request a link
-                if game.search_room(&messages).is_none() {
-                    game.request_link(discord)?;
-                } else {
-                    game.make_move(discord).expect("Unable to make move!");
-                }
-                self.matches.insert(game.channel_id, game);
-            }
+            self.track_room(discord, game)?;
         }
         dbg!(self.matches.len());
+        Ok(())
+    }
+    pub fn track_room(&mut self, discord: &Discord, mut game: AsyncGameState) -> Result<()> {
+        // If we are not yet tracking this game room
+        if !self.matches.contains_key(&game.channel_id) {
+            let messages = discord.get_messages(
+                game.channel_id,
+                discord::GetMessages::MostRecent,
+                Some(16),
+            )?;
+            // If we didn't get the full information that we needed request a link
+            if game.search_room(&messages).is_none() {
+                game.request_link(discord)?;
+            } else {
+                game.make_move(discord).expect("Unable to make move!");
+            }
+            self.matches.insert(game.channel_id, game);
+        }
+        Ok(())
+    }
+    pub fn untrack_room(&mut self, discord: &Discord, chan: &PublicChannel) -> Result<()> {
+        let _ = self.matches.remove(&chan.id);
         Ok(())
     }
 }

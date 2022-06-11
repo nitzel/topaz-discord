@@ -6,14 +6,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [profile.release]
-lto = "false"
+lto = "off"
 
 [dependencies]
 lz-str = "0.1.0"
 discord = { git = "https://github.com/SpaceManiac/discord-rs" }
 hyper = "*"
 hyper-native-tls = "*"
-topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "f472821" }
+topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "5f343be" }
 anyhow = "1"
 dotenv = "0.15"
 regex = "1.5"

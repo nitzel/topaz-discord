@@ -25,7 +25,6 @@ lazy_static! {
 mod play;
 
 const TAK_TALK: ServerId = ServerId(176389490762448897);
-const CHALLENGES: ChannelId = ChannelId(892609257424453672); // TODO maybe make this automatic
 const NODE_LIMIT: usize = 100_000;
 static TOPAZ: &'static str = "topazbot";
 
@@ -80,16 +79,6 @@ fn main() {
                     if let Err(e) = handle_tinue_req(&discord, &message) {
                         println!("{}", e);
                     }
-                } else if message.channel_id == CHALLENGES {
-                    if message.content.starts_with("!tak") {
-                        if let Some(user) = message.mentions.into_iter().next() {
-                            if user.id == play::TOPAZ_ID {
-                                println!("Searching for new rooms...");
-                                // Check for new rooms
-                                matches.update_rooms(&discord).unwrap();
-                            }
-                        }
-                    }
                 } else if let Some(x) = matches.matches.get_mut(&message.channel_id) {
                     if message.content.starts_with("!topaz version") {
                         discord
@@ -105,6 +94,17 @@ fn main() {
                     }
                 }
                 // Todo respond while still logged in
+            }
+            Ok(Event::ChannelCreate(ch)) | Ok(Event::ChannelUpdate(ch)) => {
+                if let discord::model::Channel::Public(ref ch) = ch {
+                    if ch.name.contains(TOPAZ) {
+                        if let Some(game) = crate::play::AsyncGameState::try_new(ch) {
+                            matches.track_room(&discord, game).unwrap();
+                        } else {
+                            matches.untrack_room(&discord, ch).unwrap();
+                        }
+                    }
+                }
             }
             Ok(_) => {}
             Err(discord::Error::Closed(code, body)) => {

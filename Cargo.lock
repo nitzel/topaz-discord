@@ -64,10 +64,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
-name = "board-game-traits"
+name = "bitintr"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f0c0fc76324ee558f1c6239a069c3101d74286eedd7d9b1e307d47b4f039c23"
+checksum = "7ba5a5c4df8ac8673f22698f443ef1ce3853d7f22d5a15ebf66b9a7553b173dd"
 
 [[package]]
 name = "byteorder"
@@ -947,10 +947,10 @@ dependencies = [
 [[package]]
 name = "topaz-tak"
 version = "0.1.0"
-source = "git+https://github.com/Jakur/topaz-tak?rev=f472821#f4728213164fb7b18e237b91e9f122139705cfb4"
+source = "git+https://github.com/Jakur/topaz-tak?rev=5f343be#5f343beb494827514537d8e6331eaabe34ed3360"
 dependencies = [
  "anyhow",
- "board-game-traits",
+ "bitintr",
  "cfg-if 1.0.0",
  "colorful",
  "crossbeam-channel",
