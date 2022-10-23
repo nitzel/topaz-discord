@@ -1,20 +1,105 @@
 use anyhow::{anyhow, Result};
-use discord::model::{ChannelId, Event, Message, PublicChannel, ServerId};
-use discord::Discord;
 use dotenv;
-use hyper::net::HttpsConnector;
-use hyper::Client;
-use hyper_native_tls::NativeTlsClient;
+use hyper::client::HttpConnector;
+// use hyper::net::HttpsConnector;
+// use hyper::Client;
 use lazy_static::lazy_static;
 use lz_str::{decompress_uri, str_to_u32_vec};
 use regex::Regex;
 use std::collections::HashMap;
-use std::io::Read;
 use std::{env, time};
 use topaz_tak::board::{Board5, Board6, Board7};
 use topaz_tak::search::proof::TinueSearch;
 use topaz_tak::{generate_all_moves, Position};
 use topaz_tak::{Color, GameMove, TakBoard, TakGame};
+
+use serenity::model::prelude::*;
+use serenity::prelude::*;
+
+use hyper_rustls::HttpsConnector;
+
+lazy_static! {
+    static ref HTTP_CLIENT: hyper::Client<HttpsConnector<HttpConnector>> = {
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_only()
+            .enable_http1()
+            .build();
+
+        let client: hyper::Client<_, hyper::Body> = hyper::Client::builder().build(https);
+        client
+    };
+}
+
+#[derive(Debug)]
+struct Handler;
+
+#[serenity::async_trait]
+impl EventHandler for Handler {
+    async fn message(&self, context: Context, msg: Message) {
+        tracing::debug!("Message: {:?}", msg.content);
+        if msg.author.name.contains("Aby") {
+            tracing::debug!("My master spoke to me!");
+        }
+        if msg.content.starts_with("!tinue") {
+            tracing::debug!("Running Tinue...");
+            if let Err(e) = handle_tinue_req(&context, &msg).await {
+                tracing::warn!("Error handling tinue request: {}", e);
+            }
+        }
+        if msg.content == "!ping" {
+            tracing::debug!("Should send pong...");
+            if let Err(e) = msg.channel_id.say(&context, "Pong!").await {
+                tracing::warn!("Failed to send message: {:?}", e);
+            }
+        }
+    }
+    async fn ready(&self, _: Context, ready: Ready) {
+        tracing::debug!("{} is connected!", ready.user.name);
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    // This will load the environment variables located at `./.env`, relative to
+    // the CWD. See `./.env.example` for an example on how to structure this.
+    dotenv::dotenv().expect("Failed to load .env file");
+
+    // Initialize the logger to use environment variables.
+    //
+    // In this case, a good default is setting the environment variable
+    // `RUST_LOG` to `debug`.
+    // tracing_subscriber::fmt::init();
+    // a builder for `FmtSubscriber`.
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
+        // will be written to stdout.
+        .with_max_level(tracing::Level::DEBUG)
+        // completes the builder.
+        .finish();
+
+    // let https = hyper_rustls::HttpsConnectorBuilder::new()
+    //     .with_native_roots()
+    //     .https_only()
+    //     .enable_http1()
+    //     .build();
+
+    // let client: hyper::Client<_, hyper::Body> = hyper::Client::builder().build(https);
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
+    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+
+    let mut client = Client::builder(
+        &token,
+        GatewayIntents::from_bits(1 << 15 | 68608).unwrap() | GatewayIntents::non_privileged(),
+    )
+    .event_handler(Handler)
+    .await?;
+
+    client.start().await?;
+    Ok(())
+}
 
 lazy_static! {
     static ref PTN_META: Regex = Regex::new(r#"\[(?P<Key>.*?) "(?P<Value>.*?)"\]"#).unwrap();
@@ -22,9 +107,9 @@ lazy_static! {
     static ref VER_RE: Regex = Regex::new(r#"rev = "\S+""#).unwrap();
 }
 
-mod play;
+// mod play;
 
-const TAK_TALK: ServerId = ServerId(176389490762448897);
+// const TAK_TALK: ServerId = ServerId(176389490762448897);
 const NODE_LIMIT: usize = 100_000;
 static TOPAZ: &'static str = "topazbot";
 
@@ -52,69 +137,53 @@ fn read_cargo_toml(s: &str) -> Option<String> {
     None
 }
 
-fn main() {
-    read_dotenv();
-    // Log in to Discord using a bot token from the environment
-    // .env file in the root of the project should have format DISCORD_TOKEN="[TOKEN]"
-    let (_, token) = env::vars()
-        .find(|(k, _)| k == "DISCORD_TOKEN")
-        .expect("Could not read .env file!");
-    let version = env::vars()
-        .find(|(k, _)| k == "CARGO_FILE")
-        .and_then(|(_, v)| read_cargo_toml(&v))
-        .unwrap_or_else(|| "UNKNOWN".to_string());
-    let discord = Discord::from_bot_token(&token).expect("Discord login failed!");
-
-    // Establish and use a websocket connection
-    let (mut connection, _) = discord.connect().expect("Discord connection failed!");
-    println!("Ready.");
-
-    let mut matches = play::Matches::default();
-    matches.update_rooms(&discord).unwrap();
-    loop {
-        match connection.recv_event() {
-            Ok(Event::MessageCreate(message)) => {
-                if message.content.starts_with("!tinue") {
-                    // Todo handle this error better
-                    if let Err(e) = handle_tinue_req(&discord, &message) {
-                        println!("{}", e);
-                    }
-                } else if let Some(x) = matches.matches.get_mut(&message.channel_id) {
-                    if message.content.starts_with("!topaz version") {
-                        discord
-                            .send_message(
-                                message.channel_id,
-                                &format!("Version: {}", version),
-                                "",
-                                false,
-                            )
-                            .unwrap();
-                    } else {
-                        x.do_message(&message, &discord);
-                    }
-                }
-                // Todo respond while still logged in
-            }
-            Ok(Event::ChannelCreate(ch)) | Ok(Event::ChannelUpdate(ch)) => {
-                if let discord::model::Channel::Public(ref ch) = ch {
-                    if ch.name.contains(TOPAZ) {
-                        if let Some(game) = crate::play::AsyncGameState::try_new(ch) {
-                            matches.track_room(&discord, game).unwrap();
-                        } else {
-                            matches.untrack_room(&discord, ch).unwrap();
-                        }
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(discord::Error::Closed(code, body)) => {
-                println!("Gateway closed on us with code {:?}: {}", code, body);
-                break;
-            }
-            Err(err) => println!("Received error: {:?}", err),
-        }
-    }
-}
+// fn main() {
+//     // let mut matches = play::Matches::default();
+//     // matches.update_rooms(&discord).unwrap();
+//     // loop {
+//     //     match connection.recv_event() {
+//     //         Ok(Event::MessageCreate(message)) => {
+//     //             if message.content.starts_with("!tinue") {
+//     //                 // Todo handle this error better
+//     //                 if let Err(e) = handle_tinue_req(&discord, &message) {
+//     //                     println!("{}", e);
+//     //                 }
+//     //             } else if let Some(x) = matches.matches.get_mut(&message.channel_id) {
+//     //                 if message.content.starts_with("!topaz version") {
+//     //                     discord
+//     //                         .send_message(
+//     //                             message.channel_id,
+//     //                             &format!("Version: {}", version),
+//     //                             "",
+//     //                             false,
+//     //                         )
+//     //                         .unwrap();
+//     //                 } else {
+//     //                     x.do_message(&message, &discord);
+//     //                 }
+//     //             }
+//     //             // Todo respond while still logged in
+//     //         }
+//     //         Ok(Event::ChannelCreate(ch)) | Ok(Event::ChannelUpdate(ch)) => {
+//     //             if let discord::model::Channel::Public(ref ch) = ch {
+//     //                 if ch.name.contains(TOPAZ) {
+//     //                     if let Some(game) = crate::play::AsyncGameState::try_new(ch) {
+//     //                         matches.track_room(&discord, game).unwrap();
+//     //                     } else {
+//     //                         matches.untrack_room(&discord, ch).unwrap();
+//     //                     }
+//     //                 }
+//     //             }
+//     //         }
+//     //         Ok(_) => {}
+//     //         Err(discord::Error::Closed(code, body)) => {
+//     //             println!("Gateway closed on us with code {:?}: {}", code, body);
+//     //             break;
+//     //         }
+//     //         Err(err) => println!("Received error: {:?}", err),
+//     //     }
+//     // }
+// }
 
 struct TinueRequest<'a> {
     sender: &'a str,
@@ -126,27 +195,31 @@ impl<'a> TinueRequest<'a> {
         Self { sender, content }
     }
 
-    fn get_ptn_string(&self) -> Result<String> {
+    async fn get_ptn_string(&self) -> Result<String> {
         let details = self
             .content
             .split_whitespace()
             .nth(1)
             .ok_or_else(|| anyhow!("Bad query request"))?;
-        get_ptn_string(details)
+        get_ptn_string(details).await
     }
 }
 
-fn get_ptn_string(details: &str) -> Result<String> {
+async fn get_ptn_string(details: &str) -> Result<String> {
+    use std::io::Write;
     if let Ok(game_id) = details.parse::<u32>() {
         // Assume it is a playtak id
-        let mut buffer = String::new();
-        let ssl = NativeTlsClient::new().unwrap();
-        let connector = HttpsConnector::new(ssl);
-        let client = Client::with_connector(connector);
-        let url = format!("https://www.playtak.com/games/{}/view", game_id);
-        let mut res = client.get(&url).send()?;
-        res.read_to_string(&mut buffer)?;
-        Ok(buffer)
+        let mut buffer = Vec::new();
+        // let ssl = NativeTlsClient::new().unwrap();
+        // let connector = HttpsConnector::new(ssl);
+        // let client = Client::with_connector(connector);
+        let url = format!("https://playtak.com/games/{}/view", game_id).parse()?;
+        let mut res = HTTP_CLIENT.get(url).await?;
+        while let Some(chunk) = hyper::body::HttpBody::data(&mut res.body_mut()).await {
+            buffer.write_all(&chunk?)?;
+        }
+        // res.read_to_string(&mut buffer)?;
+        Ok(String::from_utf8(buffer)?)
     } else {
         // See if it is a ptn.ninja link
         if let Some(substr) = details.split("ptn.ninja/").nth(1) {
@@ -164,10 +237,10 @@ fn get_ptn_string(details: &str) -> Result<String> {
     }
 }
 
-fn handle_tinue_req(discord: &Discord, message: &Message) -> Result<()> {
+async fn handle_tinue_req(context: &serenity::client::Context, message: &Message) -> Result<()> {
     let req = TinueRequest::new(&message.author.name, &message.content);
     let start_time = time::Instant::now();
-    let ptn = req.get_ptn_string()?;
+    let ptn = req.get_ptn_string().await?;
     let game = parse_game(&ptn).ok_or_else(|| anyhow!("Unable to parse game"))?;
     let tinue_plies = match game.0 {
         TakGame::Standard5(board) => find_all_tinue(board, &game.1),
@@ -194,20 +267,18 @@ fn handle_tinue_req(discord: &Discord, message: &Message) -> Result<()> {
         }
     };
     let duration = time::Instant::now().duration_since(start_time);
-
-    discord.send_message(
-        message.channel_id,
-        &format!(
-            "Sure thing, {}! Completed in {} ms.\nTinue: {}\nRoad: {}\nTimeout: {}",
-            message.author.name,
-            duration.as_millis(),
-            printable(tinue),
-            printable(road),
-            printable(timeout),
-        ),
-        "",
-        false,
-    )?;
+    let message_string = format!(
+        "Sure thing, {}! Completed in {} ms.\nTinue: {}\nRoad: {}\nTimeout: {}",
+        message.author.name,
+        duration.as_millis(),
+        printable(tinue),
+        printable(road),
+        printable(timeout),
+    );
+    message
+        .channel_id
+        .say(context.http.clone(), message_string)
+        .await?;
     Ok(())
 }
 

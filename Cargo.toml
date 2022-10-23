@@ -10,11 +10,29 @@ lto = "off"
 
 [dependencies]
 lz-str = "0.1.0"
-discord = { git = "https://github.com/SpaceManiac/discord-rs" }
 hyper = "*"
-hyper-native-tls = "*"
-topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "5f343be" }
+hyper-rustls = "*"
+topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "855984c" }
 anyhow = "1"
 dotenv = "0.15"
 regex = "1.5"
 lazy_static = "*"
+tracing = "0.1.23"
+tracing-subscriber = "0.2"
+
+[dependencies.tokio]
+version = "1.0"
+features = ["macros", "signal", "rt"]
+
+[dependencies.serenity]
+default-features = false
+features = [
+    "rustls_backend",
+    "http",
+    "model",
+    "gateway",
+    "client",
+    # "framework",
+    # "standard_framework"
+]
+version = "0.11.5"

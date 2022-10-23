@@ -8,7 +8,7 @@ use topaz_tak::{
 };
 
 use super::*;
-use discord::model::UserId;
+use serenity::model::id::{ChannelId, UserId};
 
 pub const TOPAZ_ID: UserId = UserId(211376698778714123);
 pub const TAK_BOT_ID: UserId = UserId(793658103668539424);
