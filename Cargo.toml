@@ -17,6 +17,7 @@ anyhow = "1"
 dotenv = "0.15"
 regex = "1.5"
 lazy_static = "*"
+once_cell = "*"
 tracing = "0.1.23"
 tracing-subscriber = "0.2"
 inferno = { git = "https://github.com/Jakur/inferno", branch = "topaz" }

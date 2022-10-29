@@ -1354,6 +1354,7 @@ dependencies = [
  "inferno",
  "lazy_static",
  "lz-str",
+ "once_cell",
  "regex",
  "serenity",
  "tokio",

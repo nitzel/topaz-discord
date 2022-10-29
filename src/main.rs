@@ -5,6 +5,7 @@ use hyper::client::HttpConnector;
 // use hyper::Client;
 use lazy_static::lazy_static;
 use lz_str::{decompress_uri, str_to_u32_vec};
+use once_cell::sync::OnceCell;
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -33,6 +34,8 @@ lazy_static! {
     };
 }
 
+static TOPAZ_VERSION: OnceCell<String> = OnceCell::new();
+
 #[derive(Debug)]
 struct Handler;
 
@@ -46,11 +49,17 @@ impl EventHandler for Handler {
                 tracing::warn!("Error handling tinue request: {}", e);
                 react(&context, &msg, "❌").await;
             }
-        }
-        if msg.content == "!ping" {
+        } else if msg.content == "!ping" {
             tracing::debug!("Should send pong...");
             if let Err(e) = msg.channel_id.say(&context, "Pong!").await {
                 tracing::warn!("Failed to send message: {:?}", e);
+            }
+        } else if msg.content == "!topaz version" {
+            if let Some(version) = TOPAZ_VERSION.get() {
+                let _ = msg.reply(&context, version).await;
+            } else {
+                let _ = msg.reply(&context, "Unk").await;
+                tracing::warn!("Unable to find topaz version, maybe Cargo location not supplied?");
             }
         }
     }
@@ -70,6 +79,11 @@ async fn react(context: &Context, msg: &Message, unicode: &str) {
 
 fn main() {
     dotenv::dotenv().expect("Failed to load .env file");
+    if let Ok(f) = env::var("CARGO_FILE") {
+        if let Some(version) = read_cargo_toml(&f) {
+            TOPAZ_VERSION.set(version).unwrap();
+        }
+    }
     tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
         .enable_all()
@@ -79,7 +93,7 @@ fn main() {
             let subscriber = tracing_subscriber::FmtSubscriber::builder()
                 // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
                 // will be written to stdout.
-                .with_max_level(tracing::Level::DEBUG)
+                .with_max_level(tracing::Level::WARN)
                 .finish();
             tracing::subscriber::set_global_default(subscriber)
                 .expect("setting default subscriber failed");
@@ -108,18 +122,6 @@ lazy_static! {
 
 // const TAK_TALK: ServerId = ServerId(176389490762448897);
 const NODE_LIMIT: usize = 100_000;
-static TOPAZ: &'static str = "topazbot";
-
-fn read_dotenv() {
-    for arg in env::args().skip(1) {
-        let path = std::path::Path::new(&arg);
-        if path.exists() {
-            dotenv::from_path(path).ok();
-            return;
-        }
-    }
-    dotenv::dotenv().ok();
-}
 
 fn read_cargo_toml(s: &str) -> Option<String> {
     let path = std::path::Path::new(s);
@@ -134,54 +136,6 @@ fn read_cargo_toml(s: &str) -> Option<String> {
     None
 }
 
-// fn main() {
-//     // let mut matches = play::Matches::default();
-//     // matches.update_rooms(&discord).unwrap();
-//     // loop {
-//     //     match connection.recv_event() {
-//     //         Ok(Event::MessageCreate(message)) => {
-//     //             if message.content.starts_with("!tinue") {
-//     //                 // Todo handle this error better
-//     //                 if let Err(e) = handle_tinue_req(&discord, &message) {
-//     //                     println!("{}", e);
-//     //                 }
-//     //             } else if let Some(x) = matches.matches.get_mut(&message.channel_id) {
-//     //                 if message.content.starts_with("!topaz version") {
-//     //                     discord
-//     //                         .send_message(
-//     //                             message.channel_id,
-//     //                             &format!("Version: {}", version),
-//     //                             "",
-//     //                             false,
-//     //                         )
-//     //                         .unwrap();
-//     //                 } else {
-//     //                     x.do_message(&message, &discord);
-//     //                 }
-//     //             }
-//     //             // Todo respond while still logged in
-//     //         }
-//     //         Ok(Event::ChannelCreate(ch)) | Ok(Event::ChannelUpdate(ch)) => {
-//     //             if let discord::model::Channel::Public(ref ch) = ch {
-//     //                 if ch.name.contains(TOPAZ) {
-//     //                     if let Some(game) = crate::play::AsyncGameState::try_new(ch) {
-//     //                         matches.track_room(&discord, game).unwrap();
-//     //                     } else {
-//     //                         matches.untrack_room(&discord, ch).unwrap();
-//     //                     }
-//     //                 }
-//     //             }
-//     //         }
-//     //         Ok(_) => {}
-//     //         Err(discord::Error::Closed(code, body)) => {
-//     //             println!("Gateway closed on us with code {:?}: {}", code, body);
-//     //             break;
-//     //         }
-//     //         Err(err) => println!("Received error: {:?}", err),
-//     //     }
-//     // }
-// }
-
 struct TinueRequest<'a> {
     sender: &'a str,
     content: &'a str,
@@ -195,21 +149,17 @@ impl<'a> TinueRequest<'a> {
     async fn get_ptn_string(&self) -> Result<String> {
         let details = self
             .content
-            .split_whitespace()
-            .nth(1)
-            .ok_or_else(|| anyhow!("Bad query request"))?;
+            .split_once(" ")
+            .ok_or_else(|| anyhow!("Bad length"))?
+            .1;
         get_ptn_string(details).await
     }
 }
 
 async fn get_ptn_string(details: &str) -> Result<String> {
-    use std::io::Write;
     if let Ok(game_id) = details.parse::<u32>() {
         // Assume it is a playtak id
         let mut buffer = Vec::new();
-        // let ssl = NativeTlsClient::new().unwrap();
-        // let connector = HttpsConnector::new(ssl);
-        // let client = Client::with_connector(connector);
         let url = format!("https://playtak.com/games/{}/view", game_id).parse()?;
         let mut res = HTTP_CLIENT.get(url).await?;
         while let Some(chunk) = hyper::body::HttpBody::data(&mut res.body_mut()).await {
@@ -227,9 +177,11 @@ async fn get_ptn_string(details: &str) -> Result<String> {
             // println!("{}", part);
             let decompressed = decompress_uri(&str_to_u32_vec(part))
                 .ok_or_else(|| anyhow!("Bad ptn ninja game string"))?;
+            dbg!(&decompressed);
             Ok(decompressed)
         } else {
-            Err(anyhow!("Unknown query format!"))
+            // Assume raw ptn
+            Ok(details.to_string())
         }
     }
 }
@@ -345,7 +297,6 @@ fn thread_search<T: TakBoard + std::fmt::Debug>(board: T) -> Result<Option<bool>
             .write(true)
             .open("tinue.svg")?,
     );
-    let reader = std::io::BufReader::new(std::fs::File::open("proof-data.txt").unwrap());
     inferno::flamegraph::handle_file(reader, writer)?;
     tracing::debug!("Handled file!");
     Ok(Some(tinue))
