@@ -7,12 +7,14 @@ use lazy_static::lazy_static;
 use lz_str::{decompress_uri, str_to_u32_vec};
 use regex::Regex;
 use std::collections::HashMap;
+use std::io::{BufRead, Write};
 use std::{env, time};
 use topaz_tak::board::{Board5, Board6, Board7};
 use topaz_tak::search::proof::{InteractiveSearch, TinueSearch};
 use topaz_tak::{generate_all_moves, Position};
 use topaz_tak::{Color, GameMove, TakBoard, TakGame};
 
+use serenity::model::channel::ReactionType;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 
@@ -39,8 +41,10 @@ impl EventHandler for Handler {
     async fn message(&self, context: Context, msg: Message) {
         if msg.content.starts_with("!tinue") {
             tracing::debug!("Running Tinue...");
+            react(&context, &msg, "👍").await;
             if let Err(e) = handle_tinue_req(&context, &msg).await {
                 tracing::warn!("Error handling tinue request: {}", e);
+                react(&context, &msg, "❌").await;
             }
         }
         if msg.content == "!ping" {
@@ -55,46 +59,43 @@ impl EventHandler for Handler {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
-    // This will load the environment variables located at `./.env`, relative to
-    // the CWD. See `./.env.example` for an example on how to structure this.
+async fn react(context: &Context, msg: &Message, unicode: &str) {
+    if let Err(_) = msg
+        .react(&context, ReactionType::Unicode(unicode.to_string()))
+        .await
+    {
+        tracing::warn!("Failed to send reaction: {}", unicode);
+    }
+}
+
+fn main() {
     dotenv::dotenv().expect("Failed to load .env file");
+    tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let subscriber = tracing_subscriber::FmtSubscriber::builder()
+                // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
+                // will be written to stdout.
+                .with_max_level(tracing::Level::DEBUG)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("setting default subscriber failed");
+            let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
-    // Initialize the logger to use environment variables.
-    //
-    // In this case, a good default is setting the environment variable
-    // `RUST_LOG` to `debug`.
-    // tracing_subscriber::fmt::init();
-    // a builder for `FmtSubscriber`.
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
-        // will be written to stdout.
-        .with_max_level(tracing::Level::DEBUG)
-        // completes the builder.
-        .finish();
+            let mut client = Client::builder(
+                &token,
+                GatewayIntents::from_bits(1 << 15 | 101376).unwrap()
+                    | GatewayIntents::non_privileged(),
+            )
+            .event_handler(Handler)
+            .await
+            .unwrap();
 
-    // let https = hyper_rustls::HttpsConnectorBuilder::new()
-    //     .with_native_roots()
-    //     .https_only()
-    //     .enable_http1()
-    //     .build();
-
-    // let client: hyper::Client<_, hyper::Body> = hyper::Client::builder().build(https);
-
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-
-    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
-
-    let mut client = Client::builder(
-        &token,
-        GatewayIntents::from_bits(1 << 15 | 101376).unwrap() | GatewayIntents::non_privileged(),
-    )
-    .event_handler(Handler)
-    .await?;
-
-    client.start().await?;
-    Ok(())
+            client.start().await.unwrap();
+        });
 }
 
 lazy_static! {
@@ -106,7 +107,7 @@ lazy_static! {
 // mod play;
 
 // const TAK_TALK: ServerId = ServerId(176389490762448897);
-const NODE_LIMIT: usize = 10_000_000;
+const NODE_LIMIT: usize = 100_000;
 static TOPAZ: &'static str = "topazbot";
 
 fn read_dotenv() {
@@ -322,6 +323,7 @@ fn thread_search<T: TakBoard + std::fmt::Debug>(board: T) -> Result<Option<bool>
 
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open("proof-data.txt")?;
     let mut file = std::io::BufWriter::new(file);
@@ -333,14 +335,17 @@ fn thread_search<T: TakBoard + std::fmt::Debug>(board: T) -> Result<Option<bool>
         &mut zobrist_hist,
         search.is_attacker(),
     )?;
+    file.flush()?;
     // Build svg
     let reader = std::io::BufReader::new(std::fs::File::open("proof-data.txt").unwrap());
     let writer = std::io::BufWriter::new(
         std::fs::OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open("tinue.svg")?,
     );
+    let reader = std::io::BufReader::new(std::fs::File::open("proof-data.txt").unwrap());
     inferno::flamegraph::handle_file(reader, writer)?;
     tracing::debug!("Handled file!");
     Ok(Some(tinue))
@@ -348,20 +353,23 @@ fn thread_search<T: TakBoard + std::fmt::Debug>(board: T) -> Result<Option<bool>
 
 async fn find_one_tinue<T: TakBoard + std::fmt::Debug + Send + 'static>(
     board: T,
-    context: &serenity::client::Context,
+    context: &Context,
     message: &Message,
 ) -> Result<()> {
+    // let tinue = thread_search(board.clone());
     let tinue = tokio::task::spawn_blocking(move || thread_search(board)).await??;
-    let my_message = message.reply(context, "Thinking...").await?;
     if let Some(tinue) = tinue {
-        let f1 = tokio::fs::File::open("tinue.svg").await?;
+        let f1 = tokio::fs::OpenOptions::new()
+            .read(true)
+            .open("tinue.svg")
+            .await?;
         let files = vec![(&f1, "tinue.svg")];
         let st = if tinue {
             "Tinue Found!"
         } else {
             "No Tinue Found."
         };
-        my_message
+        message
             .channel_id
             .send_files(context, files, |m| {
                 m.content(format!(
@@ -371,10 +379,7 @@ async fn find_one_tinue<T: TakBoard + std::fmt::Debug + Send + 'static>(
             })
             .await?;
     } else {
-        my_message
-            .channel_id
-            .say(context, "Timed out. Sorry.")
-            .await?;
+        message.channel_id.say(context, "Timed out. Sorry.").await?;
     }
     // messag
     // if let Some(is_tinue) = search.is_tinue() {
@@ -416,18 +421,17 @@ fn find_all_tinue<T: TakBoard + std::fmt::Debug>(
                 let road_move = find_road_move(&mut search.board);
                 if road_move.is_some() {
                     vec.push(TinueStatus::Road(idx + 2));
-                    println!("{}: Road", s);
+                    tracing::debug!("{}: Road", s);
                 } else {
                     vec.push(TinueStatus::Tinue(idx + 2));
-                    println!("{}: Tinue", s);
+                    tracing::debug!("{}: Tinue", s);
                 }
             } else {
-                println!("{}: Not Tinue", s);
+                tracing::debug!("{}: Not Tinue", s);
             }
         } else {
             vec.push(TinueStatus::Timeout(idx + 2));
-            println!("{}: Timeout", s);
-            println!("Timeout TPS: {:?}", search.board);
+            tracing::debug!("{}: Timeout\nTimeout TPS {:?}", s, search.board);
         }
         board = search.board;
         board.do_move(*mv);
