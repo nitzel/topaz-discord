@@ -9,7 +9,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::{env, time};
 use topaz_tak::board::{Board5, Board6, Board7};
-use topaz_tak::search::proof::TinueSearch;
+use topaz_tak::search::proof::{InteractiveSearch, TinueSearch};
 use topaz_tak::{generate_all_moves, Position};
 use topaz_tak::{Color, GameMove, TakBoard, TakGame};
 
@@ -37,10 +37,6 @@ struct Handler;
 #[serenity::async_trait]
 impl EventHandler for Handler {
     async fn message(&self, context: Context, msg: Message) {
-        tracing::debug!("Message: {:?}", msg.content);
-        if msg.author.name.contains("Aby") {
-            tracing::debug!("My master spoke to me!");
-        }
         if msg.content.starts_with("!tinue") {
             tracing::debug!("Running Tinue...");
             if let Err(e) = handle_tinue_req(&context, &msg).await {
@@ -92,7 +88,7 @@ async fn main() -> Result<()> {
 
     let mut client = Client::builder(
         &token,
-        GatewayIntents::from_bits(1 << 15 | 68608).unwrap() | GatewayIntents::non_privileged(),
+        GatewayIntents::from_bits(1 << 15 | 101376).unwrap() | GatewayIntents::non_privileged(),
     )
     .event_handler(Handler)
     .await?;
@@ -110,7 +106,7 @@ lazy_static! {
 // mod play;
 
 // const TAK_TALK: ServerId = ServerId(176389490762448897);
-const NODE_LIMIT: usize = 100_000;
+const NODE_LIMIT: usize = 10_000_000;
 static TOPAZ: &'static str = "topazbot";
 
 fn read_dotenv() {
@@ -241,12 +237,22 @@ async fn handle_tinue_req(context: &serenity::client::Context, message: &Message
     let req = TinueRequest::new(&message.author.name, &message.content);
     let start_time = time::Instant::now();
     let ptn = req.get_ptn_string().await?;
-    let game = parse_game(&ptn).ok_or_else(|| anyhow!("Unable to parse game"))?;
-    let tinue_plies = match game.0 {
-        TakGame::Standard5(board) => find_all_tinue(board, &game.1),
-        TakGame::Standard6(board) => find_all_tinue(board, &game.1),
-        TakGame::Standard7(board) => find_all_tinue(board, &game.1),
-        _ => todo!(),
+    let (game, moves) = parse_game(&ptn).ok_or_else(|| anyhow!("Unable to parse game"))?;
+    if moves.len() <= 5 {
+        // Interpret as a single position
+        match game {
+            TakGame::Standard5(board) => find_one_tinue(board, context, message).await?,
+            TakGame::Standard6(board) => find_one_tinue(board, context, message).await?,
+            TakGame::Standard7(board) => find_one_tinue(board, context, message).await?,
+            _ => anyhow::bail!("Unsupported board size"),
+        }
+        return Ok(());
+    }
+    let tinue_plies = match game {
+        TakGame::Standard5(board) => find_all_tinue(board, &moves),
+        TakGame::Standard6(board) => find_all_tinue(board, &moves),
+        TakGame::Standard7(board) => find_all_tinue(board, &moves),
+        _ => anyhow::bail!("Unsupported board size"),
     };
 
     let mut tinue = Vec::new();
@@ -300,6 +306,97 @@ impl std::fmt::Display for TinueStatus {
         let move_num = ply / 2;
         write!(f, "{}{}", move_num, color)
     }
+}
+
+fn thread_search<T: TakBoard + std::fmt::Debug>(board: T) -> Result<Option<bool>> {
+    let mut search = TinueSearch::new(board).limit(NODE_LIMIT).quiet();
+    let tinue = search.is_tinue();
+    if search.aborted() {
+        tracing::debug!("Aborting search on: {:?}", search.board);
+        // Todo
+        return Ok(None);
+    }
+    let tinue = tinue.ok_or_else(|| anyhow!("Failed to execute Tinue check"))?;
+    tracing::debug!("Valid Tinue Result Received: {:?}", search.board);
+    // Build temp file
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open("proof-data.txt")?;
+    let mut file = std::io::BufWriter::new(file);
+    let mut hist = Vec::new();
+    let mut zobrist_hist = std::collections::HashSet::new();
+    search.rebuild(
+        &mut file,
+        &mut hist,
+        &mut zobrist_hist,
+        search.is_attacker(),
+    )?;
+    // Build svg
+    let reader = std::io::BufReader::new(std::fs::File::open("proof-data.txt").unwrap());
+    let writer = std::io::BufWriter::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open("tinue.svg")?,
+    );
+    inferno::flamegraph::handle_file(reader, writer)?;
+    tracing::debug!("Handled file!");
+    Ok(Some(tinue))
+}
+
+async fn find_one_tinue<T: TakBoard + std::fmt::Debug + Send + 'static>(
+    board: T,
+    context: &serenity::client::Context,
+    message: &Message,
+) -> Result<()> {
+    let tinue = tokio::task::spawn_blocking(move || thread_search(board)).await??;
+    let my_message = message.reply(context, "Thinking...").await?;
+    if let Some(tinue) = tinue {
+        let f1 = tokio::fs::File::open("tinue.svg").await?;
+        let files = vec![(&f1, "tinue.svg")];
+        let st = if tinue {
+            "Tinue Found!"
+        } else {
+            "No Tinue Found."
+        };
+        my_message
+            .channel_id
+            .send_files(context, files, |m| {
+                m.content(format!(
+                    "{}\n{}",
+                    st, "Open this file in a web browser for best results."
+                ))
+            })
+            .await?;
+    } else {
+        my_message
+            .channel_id
+            .say(context, "Timed out. Sorry.")
+            .await?;
+    }
+    // messag
+    // if let Some(is_tinue) = search.is_tinue() {
+    //     if is_tinue {
+    //         let road_move = find_road_move(&mut search.board);
+    //         if road_move.is_some() {
+    //             println!("{}: Road", s);
+    //             return Some(TinueStatus::Road(ply_index));
+    //         } else {
+    //             println!("{}: Tinue", s);
+    //             return Some(TinueStatus::Tinue(ply_index));
+    //         }
+    //     } else {
+    //         println!("{}: Not Tinue", s);
+    //         return None;
+    //     }
+    // } else {
+    //     println!("{}: Timeout", s);
+    //     println!("Timeout TPS: {:?}", search.board);
+    //     return Some(TinueStatus::Timeout(ply_index));
+    // }
+    Ok(())
 }
 
 fn find_all_tinue<T: TakBoard + std::fmt::Debug>(
@@ -436,6 +533,7 @@ fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
         // }
     }
     if let Some(tps) = meta.get("TPS") {
+        tracing::debug!("TPS: {}", tps);
         let game = TakGame::try_from_tps(tps).ok()?;
         let game = match game {
             TakGame::Standard5(b) => TakGame::Standard5(b.with_komi(komi)),

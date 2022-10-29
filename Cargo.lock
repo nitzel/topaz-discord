@@ -1351,6 +1351,7 @@ dependencies = [
  "dotenv",
  "hyper",
  "hyper-rustls",
+ "inferno",
  "lazy_static",
  "lz-str",
  "regex",
