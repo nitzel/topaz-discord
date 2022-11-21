@@ -30,11 +30,8 @@ features = ["macros", "signal", "rt", "fs"]
 default-features = false
 features = [
     "rustls_backend",
-    "http",
     "model",
     "gateway",
     "client",
-    # "framework",
-    # "standard_framework"
 ]
 version = "0.11.5"

@@ -464,7 +464,7 @@ fn parse_game(full_ptn: &str) -> Option<(TakGame, Vec<GameMove>)> {
         meta.insert(m["Key"].to_string(), m["Value"].to_string());
     }
     let size = meta.get("Size")?.parse().ok()?;
-    let moves_text = full_ptn.split("Opening").last()?.split("{").next()?;
+    let moves_text = full_ptn.split("]").last()?;
     for m in PTN_MOVE.captures_iter(&moves_text) {
         let mv = parse_move(&m[0], size, color)?;
         moves.push(mv);
