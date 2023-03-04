@@ -9,7 +9,7 @@ edition = "2021"
 lto = "off"
 
 [dependencies]
-lz-str = "0.1.0"
+lz-str = "0.2"
 hyper = "*"
 hyper-rustls = "*"
 topaz-tak = {git = "https://github.com/Jakur/topaz-tak", rev = "855984c" }
