@@ -4,7 +4,7 @@ use hyper::client::HttpConnector;
 use lazy_static::lazy_static;
 use lz_str::decompress_from_encoded_uri_component;
 use once_cell::sync::OnceCell;
-use puzzle::TinueResponse;
+use puzzle::{Difficulty, TinueResponse};
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::Write;
@@ -48,6 +48,9 @@ struct Handler;
 #[serenity::async_trait]
 impl EventHandler for Handler {
     async fn message(&self, context: Context, msg: Message) {
+        if msg.author.bot {
+            return;
+        }
         if msg.content.starts_with("!tinue") {
             tracing::debug!("Running Tinue...");
             react(&context, &msg, "👍").await;
@@ -60,28 +63,37 @@ impl EventHandler for Handler {
                 return;
             }
             let user = msg.author.id;
-            let id: usize = msg
-                .content
-                .split_whitespace()
-                .nth(1)
-                .and_then(|x| x.parse().ok())
-                .unwrap_or(0);
-            let max_puzzle = puzzle::puzzle_length();
-            if id >= max_puzzle {
-                let _ = msg
-                    .reply(
-                        &context,
-                        format!("Please choose a puzzle between 0 and {}", max_puzzle - 1),
-                    )
-                    .await;
+            let query = msg.content.split_whitespace().nth(1);
+            if query.is_none() {
                 return;
             }
-            let puzzle_data = puzzle::new_puzzle(id);
-            if puzzle_data.is_none() {
-                return;
-            }
-            let puzzle_data = puzzle_data.unwrap();
+            let query = query.unwrap();
+            let puzzle_data = match query.to_lowercase().as_str() {
+                "easy" => puzzle::random_puzzle(Difficulty::Easy),
+                "medium" => puzzle::random_puzzle(Difficulty::Medium),
+                "hard" => puzzle::random_puzzle(Difficulty::Hard),
+                "insane" => puzzle::random_puzzle(Difficulty::Insane),
+                _ => {
+                    let id: usize = query.parse().ok().unwrap_or(0);
+                    let max_puzzle = puzzle::puzzle_length();
+                    if id >= max_puzzle {
+                        let _ = msg
+                            .reply(
+                                &context,
+                                format!("Please choose a puzzle between 0 and {}", max_puzzle - 1),
+                            )
+                            .await;
+                        return;
+                    }
+                    let puzzle_data = puzzle::new_puzzle(id);
+                    if puzzle_data.is_none() {
+                        return;
+                    }
+                    puzzle_data.unwrap()
+                }
+            };
             let difficulty = puzzle_data.human_difficulty();
+            let id = puzzle_data.id();
             let link = build_ninja_link(puzzle_data.build_board(), format!("Puzzle {}", id));
             {
                 let mut locked = ACTIVE_PUZZLES.lock().expect("Lock is not poisoned");
@@ -94,9 +106,9 @@ impl EventHandler for Handler {
                 return;
             }
             if let Some(ptn_str) = msg.content.split_whitespace().nth(1) {
+                let ptn_str = clean_ptn_move(ptn_str);
                 let user = msg.author.id;
                 let reply;
-                let mut terminal = false;
                 if let Some(puzzle) = ACTIVE_PUZZLES.lock().unwrap().get_mut(&user) {
                     let command = &ptn_str.to_ascii_lowercase();
                     if command == "legal" {
@@ -119,26 +131,47 @@ impl EventHandler for Handler {
                     } else if command == "link" {
                         let board = puzzle.build_board();
                         reply = build_ninja_link(board, String::from("Working Solution"));
-                    } else if let Some(resp) = puzzle.user_play_move(ptn_str) {
-                        puzzle.apply_move(ptn_str);
-                        let mv = resp.inner();
-                        if let Some(mv) = mv {
-                            puzzle.apply_move(&mv.to_ptn::<Board6>());
-                        }
-                        if resp.is_terminal() {
-                            terminal = true;
-                        }
-                        reply = tinue_move_reply(resp);
                     } else {
-                        reply = format!("Could not interpret {} as a legal ptn move", ptn_str);
+                        reply = String::from(
+                            "Could not interpret command. To give a solution use bare ptn.",
+                        )
                     }
                 } else {
                     reply = format!("You have no active puzzles. Create one with !puzzle command");
                 }
                 let _ = msg.reply(&context, reply).await;
-                if terminal {
-                    ACTIVE_PUZZLES.lock().unwrap().remove(&user);
+            }
+        } else if Some(&msg.channel_id) == PUZZLE_CHANNEL.get() {
+            let ptn_str = msg.content.split_whitespace().nth(0).unwrap_or("");
+            let ptn_str = clean_ptn_move(ptn_str);
+            let user = msg.author.id;
+            let reply;
+            let mut terminal = false;
+            if let Some(puzzle) = ACTIVE_PUZZLES.lock().unwrap().get_mut(&user) {
+                if !PTN_MOVE.is_match(&ptn_str) {
+                    return;
                 }
+                if let Some(resp) = puzzle.user_play_move(&ptn_str) {
+                    puzzle.apply_move(&ptn_str);
+                    let mv = resp.inner();
+                    if let Some(mv) = mv {
+                        puzzle.apply_move(&mv.to_ptn::<Board6>());
+                    }
+                    if resp.is_terminal() {
+                        terminal = true;
+                    }
+                    reply = tinue_move_reply(resp);
+                } else {
+                    reply = format!("Could not interpret {} as a legal ptn move", ptn_str);
+                }
+            } else if PTN_MOVE.is_match(&ptn_str) {
+                reply = format!("You have no active puzzles. Create one with !puzzle command");
+            } else {
+                return;
+            }
+            let _ = msg.reply(&context, reply).await;
+            if terminal {
+                ACTIVE_PUZZLES.lock().unwrap().remove(&user);
             }
         } else if msg.content == "!ping" {
             tracing::debug!("Should send pong...");
@@ -168,6 +201,27 @@ impl EventHandler for Handler {
     }
     async fn ready(&self, _: Context, ready: Ready) {
         tracing::debug!("{} is connected!", ready.user.name);
+    }
+}
+
+fn clean_ptn_move(s: &str) -> String {
+    let needs_upper = s
+        .chars()
+        .take(2)
+        .filter(|&x| x.is_ascii_alphabetic())
+        .count()
+        == 2;
+    if needs_upper {
+        format!(
+            "{}{}",
+            s.chars().nth(0).unwrap().to_ascii_uppercase(),
+            s.chars()
+                .skip(1)
+                .map(|x| x.to_ascii_lowercase())
+                .collect::<String>()
+        )
+    } else {
+        s.to_ascii_lowercase()
     }
 }
 
