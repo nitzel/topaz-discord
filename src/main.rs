@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use dotenv;
-use hyper::client::HttpConnector;
 use lazy_static::lazy_static;
 use lz_str::decompress_from_encoded_uri_component;
 use once_cell::sync::{Lazy, OnceCell};
@@ -28,7 +27,7 @@ mod puzzle;
 use play::AsyncGameState;
 
 lazy_static! {
-    static ref HTTP_CLIENT: hyper::Client<HttpsConnector<HttpConnector>> = {
+    static ref HTTP_CLIENT: hyper::Client<HttpsConnector<hyper::client::HttpConnector>> = {
         let https = hyper_rustls::HttpsConnectorBuilder::new()
             .with_native_roots()
             .https_only()
@@ -47,8 +46,8 @@ static PUZZLE_CHANNEL: OnceCell<ChannelId> = OnceCell::new();
 static ACTIVE_GAMES: Lazy<Arc<Mutex<HashMap<ChannelId, AsyncGameState>>>> =
     Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 static SHORT_NAME: &'static str = "topazbot";
-pub const TOPAZ_ID: UserId = UserId(211376698778714123);
-pub const TAK_BOT_ID: UserId = UserId(793658103668539424);
+pub const TOPAZ_ID: UserId = UserId::new(211376698778714123);
+pub const TAK_BOT_ID: UserId = UserId::new(793658103668539424);
 
 enum GameAction {
     HandleMessage,
@@ -61,11 +60,11 @@ struct Handler;
 
 #[serenity::async_trait]
 impl EventHandler for Handler {
-    async fn channel_create(&self, context: Context, channel: &GuildChannel) {
-        if channel.name().contains(SHORT_NAME) {
-            let _ = add_channel(&context, channel).await;
-        }
-    }
+    // async fn channel_create(&self, context: Context, channel: &GuildChannel) {
+    //     if channel.name().contains(SHORT_NAME) {
+    //         let _ = add_channel(&context, channel).await;
+    //     }
+    // }
     async fn message(&self, context: Context, msg: Message) {
         let mut action = GameAction::None;
         {
@@ -125,10 +124,8 @@ impl EventHandler for Handler {
                 // let _ = game.do_message(context, msg).await;
             }
             GameAction::RequestLink => {
-                let _msg = msg
-                    .channel_id
-                    .send_message(context.http, |m| m.content("!tak link"))
-                    .await;
+                let message = serenity::builder::CreateMessage::new().content("!tak link");
+                let _msg = msg.channel_id.send_message(&context, message).await;
                 return;
             }
             GameAction::None => {}
@@ -291,7 +288,7 @@ impl EventHandler for Handler {
     async fn ready(&self, c: Context, ready: Ready) {
         tracing::debug!("{} is connected!", ready.user.name);
         for g in ready.guilds {
-            let channels = c.http.get_channels(g.id.0).await;
+            let channels = c.http.get_channels(g.id).await;
             if let Ok(channels) = channels {
                 for chan in channels {
                     if chan.name().contains(SHORT_NAME) {
@@ -308,12 +305,10 @@ async fn add_channel(context: &Context, chan: &GuildChannel) {
     let mut game = AsyncGameState::default();
     if let Some(message_id) = chan.last_message_id {
         // Try to determine if it is our move or not
-        let messages = chan
-            .id
-            .messages(&context.http, |retriever| {
-                retriever.around(message_id).limit(5)
-            })
-            .await;
+        let get_messages = serenity::builder::GetMessages::new()
+            .around(message_id)
+            .limit(5);
+        let messages = chan.id.messages(&context.http, get_messages).await;
         if let Ok(messages) = messages {
             // This reads most recent first
             for msg in messages {
@@ -469,7 +464,7 @@ lazy_static! {
 // mod play;
 
 // const TAK_TALK: ServerId = ServerId(176389490762448897);
-const NODE_LIMIT: usize = 100_000;
+const NODE_LIMIT: usize = 200_000;
 
 fn read_cargo_toml(s: &str) -> Option<String> {
     let path = std::path::Path::new(s);
@@ -508,7 +503,7 @@ async fn get_ptn_string(details: &str) -> Result<String> {
     if let Ok(game_id) = details.parse::<u32>() {
         // Assume it is a playtak id
         let mut buffer = Vec::new();
-        let url = format!("https://playtak.com/games/{}/view", game_id).parse()?;
+        let url = format!("https://api.playtak.com/v1/games-history/ptn/{}", game_id).parse()?;
         let mut res = HTTP_CLIENT.get(url).await?;
         while let Some(chunk) = hyper::body::HttpBody::data(&mut res.body_mut()).await {
             buffer.write_all(&chunk?)?;
@@ -681,20 +676,19 @@ async fn find_one_tinue<T: TakBoard + std::fmt::Debug + Send + 'static>(
             .read(true)
             .open("tinue.svg")
             .await?;
-        let files = vec![(&f1, "tinue.svg")];
         let st = if tinue {
             "Tinue Found!"
         } else {
             "No Tinue Found."
         };
+        let create_attach = serenity::builder::CreateAttachment::file(&f1, "tinue.svg").await?;
+        let create_message = serenity::builder::CreateMessage::new().content(format!(
+            "{}\n{}",
+            st, "Open this file in a web browser for best results."
+        ));
         message
             .channel_id
-            .send_files(context, files, |m| {
-                m.content(format!(
-                    "{}\n{}",
-                    st, "Open this file in a web browser for best results."
-                ))
-            })
+            .send_files(context, [create_attach], create_message)
             .await?;
     } else {
         message.channel_id.say(context, "Timed out. Sorry.").await?;

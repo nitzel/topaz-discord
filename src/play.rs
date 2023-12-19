@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use topaz_tak::{
     eval::{Evaluator, Weights5, Weights6},
     search::{search, SearchInfo, SearchOutcome},
+    transposition_table::HashTable,
     Position, TakGame, TimeBank,
 };
 
@@ -11,6 +12,9 @@ use serenity::model::id::ChannelId;
 
 const MAX_DEPTH: usize = 20;
 const GOAL_TIME: u64 = 20_000;
+
+static GAME_TABLE: once_cell::sync::Lazy<HashTable> =
+    once_cell::sync::Lazy::new(|| HashTable::new(2 << 19));
 
 #[derive(Default)]
 pub struct Matches {
@@ -273,15 +277,13 @@ impl AsyncGameState {
     //     Some(())
     // }
     pub async fn request_link(context: &Context, channel: ChannelId) -> Result<()> {
-        let _ = channel
-            .send_message(&context.http, |m| m.content("!tak link"))
-            .await?;
+        let message = serenity::builder::CreateMessage::new().content("!tak link");
+        let _ = channel.send_message(&context.http, message).await?;
         Ok(())
     }
     pub async fn request_redraw(context: &Context, channel: ChannelId) -> Result<()> {
-        let _ = channel
-            .send_message(&context.http, |m| m.content("!tak redraw"))
-            .await?;
+        let message = serenity::builder::CreateMessage::new().content("!tak redraw");
+        let _ = channel.send_message(&context.http, message).await?;
         Ok(())
     }
     // pub fn search_room(&mut self, messages: &[Message]) -> Option<()> {
@@ -320,7 +322,8 @@ fn get_size(game: &TakGame) -> usize {
 }
 
 fn analyze_pos<E: Evaluator + Default>(board: &mut E::Game) -> SearchOutcome<E::Game> {
-    let mut info = SearchInfo::new(MAX_DEPTH, 2 << 20).time_bank(TimeBank::flat(GOAL_TIME));
+    let hashtable = HashTable::new(2 << 20);
+    let mut info = SearchInfo::new(MAX_DEPTH, &hashtable).time_bank(TimeBank::flat(GOAL_TIME));
     let mut eval = E::default();
     let search_res = search(board, &mut eval, &mut info);
     search_res.unwrap()
@@ -397,16 +400,18 @@ where
         // }
         todo!()
     } else {
-        let mut info = SearchInfo::new(MAX_DEPTH, 2 << 20).time_bank(TimeBank::flat(GOAL_TIME));
+        let mut info = SearchInfo::new(MAX_DEPTH, &GAME_TABLE).time_bank(TimeBank::flat(GOAL_TIME));
         let mut eval = E::default();
         // if board.move_num() <= 6 {
         //     eval.add_noise();
         // }
         // tokio::task::spawn_blocking(move || thread_search(board)).await??;
         let best_move = tokio::task::spawn_blocking(move || {
-            search(&mut board, &mut eval, &mut info)
+            let outcome = search(&mut board, &mut eval, &mut info)
                 .and_then(|x| x.best_move())
-                .ok_or_else(|| anyhow!("No best move from game search!"))
+                .ok_or_else(|| anyhow!("No best move from game search!"));
+            GAME_TABLE.clear();
+            outcome
         })
         .await??;
         // let mv = GameMove::try_from_ptn(&best_move, &board).unwrap();
@@ -424,9 +429,8 @@ where
         best_move
     };
     // std::thread::sleep(Duration::from_secs(5));
-    let _ = channel
-        .send_message(&context.http, |m| m.content(best_move))
-        .await?;
+    let message = serenity::builder::CreateMessage::new().content(best_move);
+    let _ = channel.send_message(&context.http, message).await?;
     // discord.send_message(channel, &best_move, "", false)?;
     Ok(clone)
 }
