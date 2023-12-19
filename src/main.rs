@@ -3,7 +3,7 @@ use dotenv;
 use hyper::client::HttpConnector;
 use lazy_static::lazy_static;
 use lz_str::decompress_from_encoded_uri_component;
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use puzzle::{Difficulty, TinueResponse};
 use regex::Regex;
 use std::collections::HashMap;
@@ -22,7 +22,10 @@ use serenity::prelude::*;
 use hyper_rustls::HttpsConnector;
 use std::sync::{Arc, Mutex};
 
+mod play;
 mod puzzle;
+
+use play::AsyncGameState;
 
 lazy_static! {
     static ref HTTP_CLIENT: hyper::Client<HttpsConnector<HttpConnector>> = {
@@ -41,13 +44,99 @@ lazy_static! {
 
 static TOPAZ_VERSION: OnceCell<String> = OnceCell::new();
 static PUZZLE_CHANNEL: OnceCell<ChannelId> = OnceCell::new();
+static ACTIVE_GAMES: Lazy<Arc<Mutex<HashMap<ChannelId, AsyncGameState>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+static SHORT_NAME: &'static str = "topazbot";
+pub const TOPAZ_ID: UserId = UserId(211376698778714123);
+pub const TAK_BOT_ID: UserId = UserId(793658103668539424);
+
+enum GameAction {
+    HandleMessage,
+    RequestLink,
+    None,
+}
 
 #[derive(Debug)]
 struct Handler;
 
 #[serenity::async_trait]
 impl EventHandler for Handler {
+    async fn channel_create(&self, context: Context, channel: &GuildChannel) {
+        if channel.name().contains(SHORT_NAME) {
+            let _ = add_channel(&context, channel).await;
+        }
+    }
     async fn message(&self, context: Context, msg: Message) {
+        let mut action = GameAction::None;
+        {
+            let mut games = ACTIVE_GAMES.lock().unwrap();
+            if let Some(game) = games.get_mut(&msg.channel_id) {
+                if !game.is_dirty() && msg.author.id == TAK_BOT_ID {
+                    if let Some(board_data) = play::handle_link(&msg.content) {
+                        if let TakGame::Standard6(ref b) = board_data {
+                            dbg!(b);
+                        }
+                        game.set_board(board_data);
+                        action = GameAction::HandleMessage;
+                        game.set_dirty();
+                    } else {
+                        if msg.mentions_user_id(TOPAZ_ID) {
+                            game.needs_action();
+                        } else if msg.mentions.len() != 0 {
+                            game.waiting();
+                        }
+                        let split: Vec<_> = msg.content.split(" | ").collect();
+                        if let Some(data) = split.get(0) {
+                            if split.len() > 1 && PTN_MOVE.is_match(data) {
+                                match game.try_apply_move(data) {
+                                    Ok(()) => {
+                                        action = GameAction::HandleMessage;
+                                        game.set_dirty();
+                                    }
+                                    Err(e) => {
+                                        dbg!(e);
+                                        action = GameAction::RequestLink;
+                                    }
+                                }
+                            } else if game.is_topaz_move() {
+                                action = GameAction::HandleMessage;
+                                game.set_dirty();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        match action {
+            // Hack to avoid locking across the blocking async calls
+            GameAction::HandleMessage => {
+                {
+                    let mut game = ACTIVE_GAMES
+                        .lock()
+                        .unwrap()
+                        .get(&msg.channel_id)
+                        .unwrap()
+                        .get_copy();
+                    let channel = msg.channel_id;
+                    let _ = game.do_message(&context, msg).await;
+                    ACTIVE_GAMES.lock().unwrap().insert(channel, game);
+                    return;
+                }
+                // let _ = game.do_message(context, msg).await;
+            }
+            GameAction::RequestLink => {
+                let _msg = msg
+                    .channel_id
+                    .send_message(context.http, |m| m.content("!tak link"))
+                    .await;
+                return;
+            }
+            GameAction::None => {}
+        }
+        // if msg.content.starts_with("!topaz") {}
+        // if msg.mentions.iter().find(|x| x.id == TOPAZ_ID).is_some() {
+        //     // dbg!(context.http.get_channel);
+        // }
         if msg.author.bot {
             return;
         }
@@ -63,11 +152,11 @@ impl EventHandler for Handler {
                 return;
             }
             let user = msg.author.id;
-            let query = msg.content.split_whitespace().nth(1);
-            if query.is_none() {
-                return;
-            }
-            let query = query.unwrap();
+            let query = msg.content.split_whitespace().nth(1).unwrap_or("medium");
+            // if query.is_none() {
+            //     return;
+            // }
+            // let query = query.unwrap();
             let puzzle_data = match query.to_lowercase().as_str() {
                 "easy" => puzzle::random_puzzle(Difficulty::Easy),
                 "medium" => puzzle::random_puzzle(Difficulty::Medium),
@@ -199,8 +288,63 @@ impl EventHandler for Handler {
         //         .await;
         // }
     }
-    async fn ready(&self, _: Context, ready: Ready) {
+    async fn ready(&self, c: Context, ready: Ready) {
         tracing::debug!("{} is connected!", ready.user.name);
+        for g in ready.guilds {
+            let channels = c.http.get_channels(g.id.0).await;
+            if let Ok(channels) = channels {
+                for chan in channels {
+                    if chan.name().contains(SHORT_NAME) {
+                        let _ = add_channel(&c, &chan).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn add_channel(context: &Context, chan: &GuildChannel) {
+    dbg!("New channel below!");
+    let mut game = AsyncGameState::default();
+    if let Some(message_id) = chan.last_message_id {
+        // Try to determine if it is our move or not
+        let messages = chan
+            .id
+            .messages(&context.http, |retriever| {
+                retriever.around(message_id).limit(5)
+            })
+            .await;
+        if let Ok(messages) = messages {
+            // This reads most recent first
+            for msg in messages {
+                if msg.author.id != TAK_BOT_ID {
+                    continue;
+                }
+                if msg.mentions_user_id(TOPAZ_ID) {
+                    game.needs_action();
+                    let _ = AsyncGameState::request_link(&context, chan.id).await;
+                    break;
+                } else if msg.mentions.len() != 0 {
+                    game.waiting();
+                    break;
+                }
+                dbg!(msg.content);
+            }
+            if game.is_unknown_state() {
+                let _ = AsyncGameState::request_redraw(&context, chan.id).await;
+            }
+        }
+    }
+    ACTIVE_GAMES.lock().unwrap().insert(chan.id, game);
+    dbg!(chan.name());
+}
+
+fn get_size(game: &TakGame) -> usize {
+    match game {
+        TakGame::Standard5(board) => 5,
+        TakGame::Standard6(board) => 6,
+        TakGame::Standard7(board) => 7,
+        _ => 6,
     }
 }
 
@@ -373,20 +517,28 @@ async fn get_ptn_string(details: &str) -> Result<String> {
         Ok(String::from_utf8(buffer)?)
     } else {
         // See if it is a ptn.ninja link
-        if let Some(substr) = details.split("ptn.ninja/").nth(1) {
-            let part = substr
-                .split("&name")
-                .next()
-                .ok_or_else(|| anyhow!("Bad ptn ninja link!"))?;
-            // println!("{}", part);
-            let decompressed =
-                decompress_uri(part).ok_or_else(|| anyhow!("Bad ptn ninja game string"))?;
-            dbg!(&decompressed);
-            Ok(decompressed)
+        if let Ok(ninja_ptn) = parse_ninja_link(details) {
+            Ok(ninja_ptn)
         } else {
             // Assume raw ptn
             Ok(details.to_string())
         }
+    }
+}
+
+fn parse_ninja_link(details: &str) -> Result<String> {
+    if let Some(substr) = details.split("ptn.ninja/").nth(1) {
+        let part = substr
+            .split("&name")
+            .next()
+            .ok_or_else(|| anyhow!("Bad ptn ninja link!"))?;
+        // println!("{}", part);
+        let decompressed =
+            decompress_uri(part).ok_or_else(|| anyhow!("Bad ptn ninja game string"))?;
+        dbg!(&decompressed);
+        Ok(decompressed)
+    } else {
+        Err(anyhow::anyhow!("Bad ninja link"))
     }
 }
 

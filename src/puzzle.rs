@@ -31,16 +31,8 @@ lazy_static! {
                 let pv = split[2];
                 let pv = pv.split(" ").map(|x| x.to_string()).collect::<Vec<_>>();
                 let nodes = split[3].parse::<f32>().unwrap();
-                let root_nodes = split[4].parse::<f32>().unwrap();
-                let mut difficulty = 0.0;
-                if root_nodes >= 4.0 {
-                    difficulty += 0.5;
-                }
-                difficulty += (nodes / 50_000.0).clamp(0.0, 1.5);
-                difficulty += (pv.len() as f32 / 5.0).clamp(0.0, 2.0);
-                if pv.len() <= 3 {
-                    difficulty = difficulty.min(0.5)
-                }
+                // let root_nodes = split[4].parse::<f32>().unwrap();
+                let difficulty = nodes.log2();
                 PuzzleData {
                     puzzle_id,
                     game_id: id.parse().unwrap(),
@@ -266,11 +258,11 @@ impl std::fmt::Display for Difficulty {
 
 impl PuzzleData {
     fn human_difficulty(&self) -> Difficulty {
-        if self.difficulty < 1.0 {
+        if self.difficulty < 8.0 {
             Difficulty::Easy
-        } else if self.difficulty < 2.20 {
+        } else if self.difficulty < 12.0 {
             Difficulty::Medium
-        } else if self.difficulty < 3.5 {
+        } else if self.difficulty < 16.0 {
             Difficulty::Hard
         } else {
             Difficulty::Insane
@@ -279,11 +271,11 @@ impl PuzzleData {
 }
 // Guess cutoffs: <1, 2.20, 3.5, 4.0
 
-pub fn list_difficulties() {
-    for puzzle in PUZZLES.iter() {
-        if puzzle.difficulty >= 3.0 {
-            println!("{}: {}, {:?}", puzzle.difficulty, puzzle.tps, puzzle.pv);
-        }
-        // println!("{}", puzzle.difficulty);
-    }
-}
+// pub fn list_difficulties() {
+//     for puzzle in PUZZLES.iter() {
+//         if puzzle.difficulty >= 3.0 {
+//             println!("{}: {}, {:?}", puzzle.difficulty, puzzle.tps, puzzle.pv);
+//         }
+//         // println!("{}", puzzle.difficulty);
+//     }
+// }
